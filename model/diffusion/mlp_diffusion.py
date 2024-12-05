@@ -1,6 +1,5 @@
 """
 MLP models for diffusion policies.
-
 """
 
 import torch
@@ -17,7 +16,7 @@ log = logging.getLogger(__name__)
 
 
 class VisionDiffusionMLP(nn.Module):
-    """With ViT backbone"""
+    """MLP model with ViT backbone for vision-based diffusion policies."""
 
     def __init__(
         self,
@@ -38,6 +37,27 @@ class VisionDiffusionMLP(nn.Module):
         num_img=1,
         augment=False,
     ):
+        """
+        Initializes the VisionDiffusionMLP.
+
+        Args:
+            backbone: Vision backbone model.
+            action_dim (int): Dimension of the action space.
+            horizon_steps (int): Number of horizon steps.
+            cond_dim (int): Dimension of the conditioning input.
+            img_cond_steps (int, optional): Number of image conditioning steps. Defaults to 1.
+            time_dim (int, optional): Dimension of the time embedding. Defaults to 16.
+            mlp_dims (list, optional): Dimensions of MLP layers. Defaults to [256, 256].
+            activation_type (str, optional): Type of activation function. Defaults to "Mish".
+            out_activation_type (str, optional): Type of output activation. Defaults to "Identity".
+            use_layernorm (bool, optional): Whether to use layer normalization. Defaults to False.
+            residual_style (bool, optional): Whether to use residual connections. Defaults to False.
+            spatial_emb (int, optional): Dimension of spatial embeddings. Defaults to 0.
+            visual_feature_dim (int, optional): Dimension of visual features. Defaults to 128.
+            dropout (float, optional): Dropout rate. Defaults to 0.
+            num_img (int, optional): Number of images. Defaults to 1.
+            augment (bool, optional): Whether to apply augmentation. Defaults to False.
+        """
         super().__init__()
 
         # vision
@@ -172,6 +192,7 @@ class VisionDiffusionMLP(nn.Module):
 
 
 class DiffusionMLP(nn.Module):
+    """MLP model for diffusion policies without vision input."""
 
     def __init__(
         self,
@@ -186,6 +207,21 @@ class DiffusionMLP(nn.Module):
         use_layernorm=False,
         residual_style=False,
     ):
+        """
+        Initializes the DiffusionMLP.
+
+        Args:
+            action_dim (int): Dimension of the action space.
+            horizon_steps (int): Number of horizon steps.
+            cond_dim (int): Dimension of the conditioning input.
+            time_dim (int, optional): Dimension of the time embedding. Defaults to 16.
+            mlp_dims (list, optional): Dimensions of MLP layers. Defaults to [256, 256].
+            cond_mlp_dims (list, optional): Dimensions of conditional MLP layers. Defaults to None.
+            activation_type (str, optional): Type of activation function. Defaults to "Mish".
+            out_activation_type (str, optional): Type of output activation. Defaults to "Identity".
+            use_layernorm (bool, optional): Whether to use layer normalization. Defaults to False.
+            residual_style (bool, optional): Whether to use residual connections. Defaults to False.
+        """
         super().__init__()
         output_dim = action_dim * horizon_steps
         self.time_embedding = nn.Sequential(

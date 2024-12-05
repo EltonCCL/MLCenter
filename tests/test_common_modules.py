@@ -1,3 +1,5 @@
+"""Unit tests for common modules in the diffusion model."""
+
 import pytest
 import numpy as np
 import torch
@@ -7,12 +9,14 @@ from model.common.modules_tf import SpatialEmb as TFSpatialEmb, RandomShiftsAug 
 
 @pytest.fixture
 def random_seed():
+    """Fixture to set random seed for reproducibility."""
     np.random.seed(42)
     torch.manual_seed(42)
     tf.random.set_seed(42)
 
 @pytest.fixture
 def spatial_emb_params():
+    """Fixture to provide parameters for SpatialEmb."""
     return {
         'num_patch': 48,
         'patch_dim': 48,
@@ -22,7 +26,10 @@ def spatial_emb_params():
     }
 
 class TestSpatialEmb:
+    """Tests for the SpatialEmb module."""
+
     def copy_weights(self, tf_model, torch_model, spatial_emb_params):
+        """Copies weights from PyTorch model to TensorFlow model."""
         # Build TF model by calling it once
         batch_size = 1
         dummy_feat = tf.zeros((batch_size, spatial_emb_params['patch_dim'], spatial_emb_params['num_patch']))
@@ -48,6 +55,7 @@ class TestSpatialEmb:
                 ])
 
     def test_output_values(self, random_seed, spatial_emb_params):
+        """Tests the output values of SpatialEmb for consistency between PyTorch and TensorFlow."""
         batch_size = 8
         feat = np.random.randn(batch_size, spatial_emb_params['patch_dim'], spatial_emb_params['num_patch'])
         prop = np.random.randn(batch_size, spatial_emb_params['prop_dim'])
@@ -127,7 +135,10 @@ class TestSpatialEmb:
         np.testing.assert_allclose(torch_output.numpy(), tf_output.numpy(), rtol=1e-4, atol=1e-6)
 
 class TestRandomShiftsAug:
+    """Tests for the RandomShiftsAug augmentation module."""
+
     def test_output_shape(self, random_seed):
+        """Ensures the output shape is consistent after augmentation."""
         batch_size = 8
         channels = 3
         height = width = 64
@@ -151,6 +162,7 @@ class TestRandomShiftsAug:
         assert torch_output.shape == tf_output.shape
 
 def test_gradient_flow(random_seed, spatial_emb_params):
+    """Tests the gradient flow for both PyTorch and TensorFlow implementations."""
     batch_size = 8
     feat = np.random.randn(batch_size, spatial_emb_params['patch_dim'], spatial_emb_params['num_patch'])
     prop = np.random.randn(batch_size, spatial_emb_params['prop_dim'])

@@ -1,3 +1,5 @@
+"""TensorFlow modules for spatial embeddings and image augmentation."""
+
 import tensorflow as tf
 import numpy as np
 import requests
@@ -6,6 +8,16 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 
 class SpatialEmb(tf.keras.layers.Layer):
+    """Layer for computing spatial embeddings from features and properties.
+
+    Args:
+        num_patch (int): Number of patches.
+        patch_dim (int): Dimension of each patch.
+        prop_dim (int): Dimension of property vectors.
+        proj_dim (int): Dimension of the projection.
+        dropout (float, optional): Dropout rate. Defaults to 0.0.
+    """
+
     def __init__(self, num_patch, patch_dim, prop_dim, proj_dim, dropout=0.0):
         super(SpatialEmb, self).__init__()
         self.num_patch = num_patch
@@ -46,6 +58,13 @@ class SpatialEmb(tf.keras.layers.Layer):
 
 # RandomShiftsAug Layer
 class RandomShiftsAug(tf.keras.layers.Layer):
+    """Layer that applies random shift augmentations to images.
+
+    Args:
+        pad (int): Padding size for shifting.
+        **kwargs: Additional keyword arguments.
+    """
+
     def __init__(self, pad, **kwargs):
         super(RandomShiftsAug, self).__init__(**kwargs)
         self.pad = pad
@@ -84,6 +103,15 @@ class RandomShiftsAug(tf.keras.layers.Layer):
 
 # Image Loading Function
 def load_image(url, size=(96, 96)):
+    """Loads and preprocesses an image from a URL.
+
+    Args:
+        url (str): URL of the image.
+        size (tuple, optional): Desired image size. Defaults to (96, 96).
+
+    Returns:
+        np.ndarray: Preprocessed image array.
+    """
     response = requests.get(url)
     image = Image.open(BytesIO(response.content)).convert('RGB')
     image = image.resize(size)
