@@ -21,8 +21,10 @@ from model.diffusion.sampling_tf import make_timesteps as tf_make_timesteps
 @pytest.fixture(scope="module")
 def device_setup():
     """Setup devices for both frameworks"""
-    torch_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tf_device = 'GPU:0' if torch.cuda.is_available() else 'CPU:0'
+    # torch_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # tf_device = 'GPU:0' if torch.cuda.is_available() else 'CPU:0'
+    torch_device = torch.device('cpu')
+    tf_device = '/CPU:0'
     return torch_device, tf_device
 
 @pytest.fixture(autouse=True)
@@ -155,14 +157,4 @@ def test_dtype_consistency():
     assert tf_betas.dtype == tf.float64
 
 if __name__ == "__main__":
-    pytest.main(['-v'])
-
-
-if __name__ == "__main__":
-    torch_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tf_device = 'GPU:0' if torch.cuda.is_available() else 'CPU:0'
-    np.random.seed(42)
-    torch.manual_seed(42)
-    tf.random.set_seed(42)
-    
-    test_cosine_beta_schedule(10, 0.008)
+    pytest.main(['tests/test_sampling.py'])

@@ -24,20 +24,19 @@ def extract(a, t, x_shape):
     Returns:
         tensor of shape [B, 1, 1, ...]
     """
-    b = tf.shape(t)[0]
-    
-    # Reshape 'a' to [1, T] and 't' to [B, 1]
-    a = tf.reshape(a, [1, -1])
-    t = tf.cast(t, tf.int32)
-    t = tf.reshape(t, [b, 1])
-    
-    # Use tf.gather with batch_dims=0
-    out = tf.gather(a, t, batch_dims=0, axis=1)
-    
-    # Reshape to match PyTorch's behavior
-    return tf.reshape(out, [b] + [1] * (len(x_shape) - 1))
 
-def make_timesteps(batch_size, i, device='CPU:0'):
+    b = tf.shape(t)[0]
+    # Flatten t if it's not already 1D
+    t_flat = tf.reshape(t, [-1])
+    # Gather values from a using indices t
+    out = tf.gather(a, t_flat, axis=-1)
+    # Calculate the number of dimensions to expand
+    expand_dims = len(x_shape) - 1
+    # Reshape to match the required shape
+    out = tf.reshape(out, [b] + [1] * expand_dims)
+    return out
+
+def make_timesteps(batch_size, i, device):
     """
     Create timesteps tensor
     Note: device parameter kept for API compatibility but uses TF device placement
