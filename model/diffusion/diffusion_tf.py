@@ -72,11 +72,15 @@ class DiffusionModel(tf.keras.Model):
         with tf.device(device):
             self.network = network
             if network_path is not None:
-                self.network.load_weights(network_path)
-                logging.info(f"Loaded policy from {network_path}")
-
+                checkpoint = tf.keras.models.load_model(network_path)  # Similar to torch.load()
+                if "ema" in checkpoint:
+                    self.network.load_weights(checkpoint["ema"])  # Similar to load_state_dict()
+                    logging.info("Loaded SL-trained policy from %s", network_path)
+                else:
+                    self.network.load_weights(checkpoint["model"])  # Similar to load_state_dict()
+                    logging.info("Loaded RL-trained policy from %s", network_path)
             logging.info(
-                f"Number of network parameters: {np.sum([np.prod(v.shape) for v in self.network.trainable_variables])}"
+                f"Number of network parameters: {sum(tf.size(p).numpy() for p in self.network.trainable_weights)}"
             )
 
             # DDPM parameters
