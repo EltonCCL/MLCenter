@@ -79,9 +79,9 @@ class DiffusionModel(tf.keras.Model):
                 else:
                     self.network.load_weights(checkpoint["model"])  # Similar to load_state_dict()
                     logging.info("Loaded RL-trained policy from %s", network_path)
-            logging.info(
-                f"Number of network parameters: {sum(tf.size(p).numpy() for p in self.network.trainable_weights)}"
-            )
+            # logging.info(
+            #     f"Number of network parameters: {sum(tf.size(p).numpy() for p in self.network.trainable_weights)}"
+            # )
 
             # DDPM parameters
             self.betas = cosine_beta_schedule(denoising_steps)
