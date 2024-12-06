@@ -35,77 +35,47 @@ class Mish(layers.Layer):
         config = super(Mish, self).get_config()
         return config
 
-# Sinusoidal Positional Embedding Layer
 class SinusoidalPosEmb(layers.Layer):
-    """
-    Sinusoidal Positional Embedding Layer.
+    """Sinusoidal positional embedding layer."""
 
-    Args:
-        dim (int): Dimension of the embedding.
-        **kwargs: Additional keyword arguments.
-    """
     def __init__(self, dim, **kwargs):
-        super(SinusoidalPosEmb, self).__init__(**kwargs)
+        """
+        Initialize the SinusoidalPosEmb layer.
+
+        Args:
+            dim (int): Dimension of the embedding.
+            **kwargs: Additional keyword arguments.
+        """
+        super().__init__(**kwargs)
         self.dim = dim
 
     def call(self, x):
         """
-        Compute sinusoidal embeddings for input tensor.
+        Generate sinusoidal positional embeddings.
 
         Args:
-            x (tf.Tensor): Input tensor of shape (batch,) or (batch, 1).
+            x (tf.Tensor): Input tensor.
 
         Returns:
-            tf.Tensor: Embedding tensor of shape (batch, dim).
+            tf.Tensor: Positional embeddings.
         """
+        x = tf.cast(x, tf.float32)
+        
         half_dim = self.dim // 2
-        emb_scaling = math.log(10000.0) / (half_dim - 1)
-        emb = tf.range(half_dim, dtype=x.dtype) * -emb_scaling
-        emb = tf.exp(emb)  # Shape: (half_dim,)
-        emb = tf.expand_dims(x, axis=-1) * tf.expand_dims(emb, axis=0)  # Shape: (batch, half_dim)
-        emb_sin = tf.sin(emb)
-        emb_cos = tf.cos(emb)
-        emb = tf.concat([emb_sin, emb_cos], axis=-1)  # Shape: (batch, dim)
-        return emb
+        emb = math.log(10000) / (half_dim - 1)
+        
+        emb_bases = tf.range(half_dim, dtype=tf.float32)
+        emb_bases = tf.exp(emb_bases * -emb)
+        
+        x_expanded = tf.expand_dims(x, -1)
+        emb_expanded = tf.expand_dims(emb_bases, 0)
+        
+        emb = x_expanded * emb_expanded
+        
+        output = tf.concat([tf.sin(emb), tf.cos(emb)], axis=-1)
+        
+        return output
 
-    def get_config(self):
-        """
-        Return the config of the layer.
-
-        Returns:
-            dict: Configuration dictionary.
-        """
-        config = super(SinusoidalPosEmb, self).get_config()
-        config.update({
-            'dim': self.dim
-        })
-        return config
-    
-# class Downsample1d(layers.Layer):
-#     def __init__(self, dim, **kwargs):
-#         super(Downsample1d, self).__init__(**kwargs)
-#         self.conv = layers.Conv1D(
-#             filters=dim,
-#             kernel_size=3,
-#             strides=2,
-#             padding='valid',
-#             use_bias=True,
-#         )
-
-#     def call(self, x):
-#         """
-#         x: Tensor of shape (batch, length, channels)
-#         Returns:
-#             Downsampled tensor of shape (batch, ceil(length/2), channels)
-#         """
-#         return self.conv(x)
-
-#     def get_config(self):
-#         config = super(Downsample1d, self).get_config()
-#         config.update({
-#             'dim': self.conv.filters
-#         })
-#         return config
 # Downsampling Layer using Conv1D
 class Downsample1d(layers.Layer):
     """

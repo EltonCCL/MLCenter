@@ -12,12 +12,28 @@ from einops.layers.torch import Rearrange
 
 
 class SinusoidalPosEmb(nn.Module):
+    """Sinusoidal positional embedding module."""
 
     def __init__(self, dim):
+        """
+        Initialize the SinusoidalPosEmb module.
+
+        Args:
+            dim (int): Dimension of the embedding.
+        """
         super().__init__()
         self.dim = dim
 
     def forward(self, x):
+        """
+        Generate sinusoidal positional embeddings.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Positional embeddings.
+        """
         device = x.device
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
