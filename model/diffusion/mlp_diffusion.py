@@ -184,13 +184,14 @@ class VisionDiffusionMLP(nn.Module):
         # append time and cond
         time = time.view(B, 1)
         time_emb = self.time_embedding(time).view(B, self.time_dim)
+        
         x = torch.cat([x, time_emb, cond_encoded], dim=-1)
 
         # mlp
         out = self.mlp_mean(x)
         return out.view(B, Ta, Da)
 
-
+            
 class DiffusionMLP(nn.Module):
     """MLP model for diffusion policies without vision input."""
 
@@ -206,6 +207,7 @@ class DiffusionMLP(nn.Module):
         out_activation_type="Identity",
         use_layernorm=False,
         residual_style=False,
+        test_mode=False,
     ):
         """
         Initializes the DiffusionMLP.
@@ -224,12 +226,20 @@ class DiffusionMLP(nn.Module):
         """
         super().__init__()
         output_dim = action_dim * horizon_steps
-        self.time_embedding = nn.Sequential(
+        self.test_mode = test_mode
+        if test_mode:
+            self.time_embedding = nn.Sequential(
             SinusoidalPosEmb(time_dim),
-            nn.Linear(time_dim, time_dim * 2),
             nn.Mish(),
-            nn.Linear(time_dim * 2, time_dim),
         )
+        else:
+            self.time_embedding = nn.Sequential(
+                SinusoidalPosEmb(time_dim),
+                nn.Linear(time_dim, time_dim * 2),
+                nn.Mish(),
+                nn.Linear(time_dim * 2, time_dim),
+            )
+
         if residual_style:
             model = ResidualMLP
         else:
@@ -239,6 +249,7 @@ class DiffusionMLP(nn.Module):
                 [cond_dim] + cond_mlp_dims,
                 activation_type=activation_type,
                 out_activation_type="Identity",
+                test_mode=test_mode,
             )
             input_dim = time_dim + action_dim * horizon_steps + cond_mlp_dims[-1]
         else:
@@ -248,6 +259,7 @@ class DiffusionMLP(nn.Module):
             activation_type=activation_type,
             out_activation_type=out_activation_type,
             use_layernorm=use_layernorm,
+            test_mode=test_mode,
         )
         self.time_dim = time_dim
 
@@ -259,13 +271,14 @@ class DiffusionMLP(nn.Module):
         **kwargs,
     ):
         """
-        x: (B, Ta, Da)
-        time: (B,) or int, diffusion step
-        cond: dict with key state/rgb; more recent obs at the end
-            state: (B, To, Do)
+        Forward pass for DiffusionMLP.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, Ta, Da).
+            time (torch.Tensor or int): Diffusion step, shape (B,).
+            cond (dict): Conditioning dictionary with key 'state'.
         """
         B, Ta, Da = x.shape
-
         # flatten chunk
         x = x.view(B, -1)
 
@@ -280,7 +293,7 @@ class DiffusionMLP(nn.Module):
         time = time.view(B, 1)
         time_emb = self.time_embedding(time).view(B, self.time_dim)
         x = torch.cat([x, time_emb, state], dim=-1)
-
         # mlp head
         out = self.mlp_mean(x)
+
         return out.view(B, Ta, Da)
