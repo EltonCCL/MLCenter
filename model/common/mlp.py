@@ -108,6 +108,7 @@ class ResidualMLP(nn.Module):
         use_layernorm=False,
         use_layernorm_final=False,
         dropout=0,
+        test_mode=False,
     ):
         super(ResidualMLP, self).__init__()
         hidden_dim = dim_list[1]
