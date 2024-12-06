@@ -37,6 +37,7 @@ class MLP(nn.Module):
         dropout=0,
         use_drop_final=False,
         verbose=False,
+        test_mode=False,
     ):
         super(MLP, self).__init__()
 
@@ -44,6 +45,7 @@ class MLP(nn.Module):
         # added to computation graph. Instead, we should use `nn.ModuleList()`.
         self.moduleList = nn.ModuleList()
         self.append_layers = append_layers
+        self.test_mode = test_mode
         num_layer = len(dim_list) - 1
         for idx in range(num_layer):
             i_dim = dim_list[idx]
@@ -52,10 +54,18 @@ class MLP(nn.Module):
                 i_dim += append_dim
             linear_layer = nn.Linear(i_dim, o_dim)
 
+            if test_mode:
+                linear_layer.weight.data.fill_(1.0)
+                linear_layer.bias.data.fill_(1.0)
+
             # Add module components
             layers = [("linear_1", linear_layer)]
             if use_layernorm and (idx < num_layer - 1 or use_layernorm_final):
                 layers.append(("norm_1", nn.LayerNorm(o_dim)))
+                if test_mode:
+                    # Initialize LayerNorm parameters to identity transformation
+                    layers[-1][1].weight.data.fill_(1.0)
+                    layers[-1][1].bias.data.fill_(0.0)
             if dropout > 0 and (idx < num_layer - 1 or use_drop_final):
                 layers.append(("dropout_1", nn.Dropout(dropout)))
 
@@ -74,6 +84,7 @@ class MLP(nn.Module):
             logging.info(self.moduleList)
 
     def forward(self, x, append=None):
+
         for layer_ind, m in enumerate(self.moduleList):
             if append is not None and layer_ind in self.append_layers:
                 x = torch.cat((x, append), dim=-1)
