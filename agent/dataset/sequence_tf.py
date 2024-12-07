@@ -19,12 +19,6 @@ TransitionWithReturn = namedtuple(
 )
 
 class StitchedSequenceDataset:
-    """
-    Load stitched trajectories of states/actions/images, and 1-D array of traj_lengths, from npz or pkl file.
-    
-    Use the first max_n_episodes episodes (instead of random sampling)
-    """
-    
     def __init__(
         self,
         dataset_path,
@@ -35,150 +29,95 @@ class StitchedSequenceDataset:
         use_img=False,
         device="/GPU:0",
     ):
-        assert (
-            img_cond_steps <= cond_steps
-        ), "consider using more cond_steps than img_cond_steps"
-        
         self.horizon_steps = horizon_steps
         self.cond_steps = cond_steps
         self.img_cond_steps = img_cond_steps
-        self.device = device
         self.use_img = use_img
-        self.max_n_episodes = max_n_episodes
-        self.dataset_path = dataset_path
 
-        with tf.device(device):
-            # Load dataset and convert to tensors on the specified device
-            if dataset_path.endswith(".npz"):
-                dataset = np.load(dataset_path, allow_pickle=False)
-            elif dataset_path.endswith(".pkl"):
-                with open(dataset_path, "rb") as f:
-                    dataset = pickle.load(f)
-            else:
-                raise ValueError(f"Unsupported file format: {dataset_path}")
-            traj_lengths = dataset["traj_lengths"][:max_n_episodes]
-            total_num_steps = np.sum(traj_lengths)
+        # Load dataset
+        if dataset_path.endswith(".npz"):
+            dataset = np.load(dataset_path, allow_pickle=False)
+        elif dataset_path.endswith(".pkl"):
+            with open(dataset_path, "rb") as f:
+                dataset = pickle.load(f)
+        else:
+            raise ValueError(f"Unsupported file format: {dataset_path}")
 
-            self.states = tf.convert_to_tensor(
-                dataset["states"][:total_num_steps], dtype=tf.float32
-            )
-            self.actions = tf.convert_to_tensor(
-                dataset["actions"][:total_num_steps], dtype=tf.float32
-            )
-            if self.use_img:
-                self.images = tf.convert_to_tensor(
-                    dataset["images"][:total_num_steps], dtype=tf.float32
-                )
+        # Process data
+        traj_lengths = dataset["traj_lengths"][:max_n_episodes]
+        total_num_steps = np.sum(traj_lengths)
 
-        # Set up indices for sampling
-        self.indices = self.make_indices(traj_lengths, horizon_steps)
-
-        log.info(f"Loaded dataset from {dataset_path}")
-        log.info(f"Number of episodes: {min(max_n_episodes, len(traj_lengths))}")
-        log.info(f"States shape/dtype: {self.states.shape, self.states.dtype}")
-        log.info(f"Actions shape/dtype: {self.actions.shape, self.actions.dtype}")
+        # Convert to TensorFlow tensors
+        self.states = tf.convert_to_tensor(dataset["states"][:total_num_steps], dtype=tf.float32)
+        self.actions = tf.convert_to_tensor(dataset["actions"][:total_num_steps], dtype=tf.float32)
         if self.use_img:
-            log.info(f"Images shape/dtype: {self.images.shape, self.images.dtype}")
+            self.images = tf.convert_to_tensor(dataset["images"][:total_num_steps], dtype=tf.float32)
 
-    def __len__(self):
-        return len(self.indices)
+        # Make indices
+        self.indices = self._make_indices(traj_lengths)
 
-    def __getitem__(self, idx):
-        """
-        repeat states/images if using history observation at the beginning of the episode
-        """
-        start, num_before_start = self.indices[idx]
-        end = start + self.horizon_steps
-        
-        states = self.states[(start - num_before_start):(start + 1)]
-        actions = self.actions[start:end]
-
-        # Stack observation history
-        states = tf.stack([
-            states[max(num_before_start - t, 0)]
-            for t in reversed(range(self.cond_steps))
-        ])
-
-        conditions = {"state": states}
-        
-        if self.use_img:
-            images = self.images[(start - num_before_start):end]
-            images = tf.stack([
-                images[max(num_before_start - t, 0)]
-                for t in reversed(range(self.img_cond_steps))
-            ])
-            conditions["rgb"] = images
-            
-        return Batch(actions, conditions)
-
-    def make_indices(self, traj_lengths, horizon_steps):
-        """
-        makes indices for sampling from dataset;
-        each index maps to a datapoint, also save the number of steps before it within the same trajectory
-        """
+    def _make_indices(self, traj_lengths):
         indices = []
         cur_traj_index = 0
         for traj_length in traj_lengths:
-            max_start = cur_traj_index + traj_length - horizon_steps
-            indices += [
-                (i, i - cur_traj_index) for i in range(cur_traj_index, max_start + 1)
-            ]
+            max_start = cur_traj_index + traj_length - self.horizon_steps
+            indices.extend([(i, i - cur_traj_index) for i in range(cur_traj_index, max_start + 1)])
             cur_traj_index += traj_length
         return indices
 
-    def set_train_val_split(self, train_split):
-        """
-        Not doing validation right now
-        """
-        num_train = int(len(self.indices) * train_split)
-        train_indices = random.sample(self.indices, num_train)
-        val_indices = [i for i in range(len(self.indices)) if i not in train_indices]
-        self.indices = train_indices
-        return val_indices
+    @tf.function(reduce_retracing=True)
+    def _get_item(self, start, num_before_start):
+        end = start + self.horizon_steps
+        
+        # Get states and actions
+        states = self.states[(start - num_before_start):(start + 1)]
+        actions = self.actions[start:end]
+
+        # Stack states
+        states_history = []
+        for t in range(self.cond_steps-1, -1, -1):
+            idx = tf.maximum(num_before_start - t, 0)
+            states_history.append(states[idx])
+        states = tf.stack(states_history)
+
+        conditions = {"state": states}
+
+        if self.use_img:
+            images = self.images[(start - num_before_start):end]
+            img_history = []
+            for t in range(self.img_cond_steps-1, -1, -1):
+                idx = tf.maximum(num_before_start - t, 0)
+                img_history.append(images[idx])
+            images = tf.stack(img_history)
+            conditions["rgb"] = images
+
+        return actions, conditions
 
     def as_tensorflow_dataset(self, batch_size=32, shuffle=True):
-        # Create a TensorFlow Dataset from indices
-        dataset = tf.data.Dataset.from_tensor_slices(self.indices)
+        # Convert indices to tensors
+        indices = tf.constant(self.indices, dtype=tf.int32)
+        
+        # Create dataset from indices
+        dataset = tf.data.Dataset.from_tensor_slices(indices)
 
-        # Add shuffling if requested
         if shuffle:
-            dataset = dataset.shuffle(buffer_size=len(self.indices))
+            dataset = dataset.shuffle(buffer_size=1000)
 
-        def _map_fn(idx):
-            start, num_before_start = idx[0], idx[1]
-            end = start + self.horizon_steps
-            states = self.states[(start - num_before_start):(start + 1)]
-            actions = self.actions[start:end]
+        # Map function to get items
+        def map_fn(idx):
+            return self._get_item(idx[0], idx[1])
 
-            # Stack observation history
-            states = tf.stack([
-                states[tf.maximum(num_before_start - t, 0)]
-                for t in reversed(range(self.cond_steps))
-            ])
-
-            conditions = {"state": states}
-            if self.use_img:
-                images = self.images[(start - num_before_start):end]
-                images = tf.stack([
-                    images[tf.maximum(num_before_start - t, 0)]
-                    for t in reversed(range(self.img_cond_steps))
-                ])
-                conditions["rgb"] = images
-
-            return actions, conditions
-
-        # Apply the mapping function
+        # Apply mapping and batching
         dataset = dataset.map(
-            lambda idx: _map_fn(idx),
-            num_parallel_calls=tf.data.experimental.AUTOTUNE
+            map_fn, 
+            num_parallel_calls=tf.data.AUTOTUNE
+        ).batch(
+            batch_size,
+            drop_remainder=True
+        ).prefetch(
+            tf.data.AUTOTUNE
         )
 
-        # Batch the dataset
-        dataset = dataset.batch(batch_size)
-
-        # Prefetch for better performance
-        dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-        
         return dataset
 
 class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
