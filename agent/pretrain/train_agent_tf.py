@@ -140,11 +140,7 @@ class PreTrainAgent:
 
         log.info(f"Init optimizer")
         # Optimizer
-        self.optimizer = tf.keras.optimizers.AdamW(
-            learning_rate=cfg.train.learning_rate,
-            weight_decay=cfg.train.weight_decay
-        )
-        
+
         log.info(f"Init learning rate scheduler")
         # Learning rate scheduler
         self.lr_scheduler = CosineAnnealingWarmupRestarts(
@@ -155,6 +151,12 @@ class PreTrainAgent:
             warmup_steps=cfg.train.lr_scheduler.warmup_steps,
             gamma=1.0
         )
+
+        self.optimizer = tf.keras.optimizers.AdamW(
+            learning_rate=self.lr_scheduler,
+            weight_decay=cfg.train.weight_decay
+        )
+
 
         self.reset_parameters()
         self.epoch = 0

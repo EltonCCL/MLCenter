@@ -7,6 +7,9 @@ import tensorflow as tf
 from tqdm import tqdm
 from util.timer import Timer  # You need to implement or adapt this for TF
 from agent.pretrain.train_agent_tf import PreTrainAgent  # The converted PreTrainAgent
+import os
+
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_cpu_global_jit'
 
 log = logging.getLogger(__name__)
 
@@ -52,9 +55,6 @@ class TrainDiffusionAgent(PreTrainAgent):
                     loss_val_batch = self.model.loss(*batch_val)
                     loss_val_epoch.append(loss_val_batch.numpy())
                 loss_val = np.mean(loss_val_epoch)
-
-            # Update learning rate scheduler
-            self.lr_scheduler.step()
 
             # Save model
             if self.epoch % self.save_model_freq == 0 or self.epoch == self.n_epochs:
