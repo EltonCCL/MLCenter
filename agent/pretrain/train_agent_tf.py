@@ -121,7 +121,9 @@ class PreTrainAgent:
         self.dataset_train = hydra.utils.instantiate(cfg.train_dataset)
         log.info("init complete")
         self.dataloader_train = (
-            self.dataset_train.as_tensorflow_dataset()
+            self.dataset_train.as_tensorflow_dataset(
+                batch_size=self.batch_size,
+            )
         )
         log.info(f"Finished building dataset")
 

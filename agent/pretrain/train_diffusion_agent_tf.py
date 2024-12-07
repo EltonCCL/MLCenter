@@ -4,7 +4,7 @@ import logging
 import wandb
 import numpy as np
 import tensorflow as tf
-
+from tqdm import tqdm
 from util.timer import Timer  # You need to implement or adapt this for TF
 from agent.pretrain.train_agent_tf import PreTrainAgent  # The converted PreTrainAgent
 
@@ -33,8 +33,7 @@ class TrainDiffusionAgent(PreTrainAgent):
             # Training
             train_loss_metric = tf.keras.metrics.Mean()
         
-            for batch_train in self.dataloader_train:
-                log.info(f"Batch {cnt_batch}")
+            for batch_train in tqdm(self.dataloader_train):
                 loss_train = self.train_step(batch_train)
                 train_loss_metric.update_state(loss_train)
                 

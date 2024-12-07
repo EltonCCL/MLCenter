@@ -6,7 +6,7 @@ Pre-training diffusion policy
 import logging
 import wandb
 import numpy as np
-
+from tqdm import tqdm
 log = logging.getLogger(__name__)
 from util.timer import Timer
 from agent.pretrain.train_agent import PreTrainAgent, batch_to_device
@@ -26,8 +26,7 @@ class TrainDiffusionAgent(PreTrainAgent):
 
             # train
             loss_train_epoch = []
-            for batch_train in self.dataloader_train:
-                log.info(f"Batch {cnt_batch}")
+            for batch_train in tqdm(self.dataloader_train):
                 if self.dataset_train.device == "cpu":
                     batch_train = batch_to_device(batch_train)
 

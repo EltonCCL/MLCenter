@@ -136,9 +136,13 @@ class StitchedSequenceDataset:
         self.indices = train_indices
         return val_indices
 
-    def as_tensorflow_dataset(self):
-        # Create a TensorFlow Dataset from tensors
+    def as_tensorflow_dataset(self, batch_size=32, shuffle=True):
+        # Create a TensorFlow Dataset from indices
         dataset = tf.data.Dataset.from_tensor_slices(self.indices)
+
+        # Add shuffling if requested
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(self.indices))
 
         def _map_fn(idx):
             start, num_before_start = idx[0], idx[1]
@@ -161,18 +165,20 @@ class StitchedSequenceDataset:
                 ])
                 conditions["rgb"] = images
 
-            # Actions and conditions need an extra dimension
-            actions = tf.expand_dims(actions, axis=0)
-            for key in conditions:
-                conditions[key] = tf.expand_dims(conditions[key], axis=0)
             return actions, conditions
 
-        # Apply the mapping function and optimize the dataset pipeline
+        # Apply the mapping function
         dataset = dataset.map(
             lambda idx: _map_fn(idx),
             num_parallel_calls=tf.data.experimental.AUTOTUNE
         )
+
+        # Batch the dataset
+        dataset = dataset.batch(batch_size)
+
+        # Prefetch for better performance
         dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+        
         return dataset
 
 class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
