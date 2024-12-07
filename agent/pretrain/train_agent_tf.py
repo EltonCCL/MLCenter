@@ -104,7 +104,6 @@ class PreTrainAgent:
         # Wandb
         self.use_wandb = cfg.get("wandb", None)
         if self.use_wandb is not None:
-            assert hasattr(cfg.wandb, 'project') and hasattr(cfg.wandb, 'run'), "Wandb config must have 'project' and 'run'."
             wandb.init(
                 # entity=cfg.wandb.entity,
                 project=cfg.wandb.project,

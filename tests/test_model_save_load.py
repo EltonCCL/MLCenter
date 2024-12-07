@@ -21,7 +21,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 def test_save_and_load_model():
     # Load configuration
-    cfg = OmegaConf.load('/home/elton/dppo/cfg/gym/pretrain/hopper-medium-v2/pre_diffusion_mlp_tf.yaml')
+    cfg = OmegaConf.load('tests/cfg/pre_diffusion_mlp_tf_dummy.yaml')
     cfg.train_dataset_path = "tests/dummy_data/train_dummy.npz"
     
     with tempfile.TemporaryDirectory() as tmpdirname:
@@ -33,7 +33,7 @@ def test_save_and_load_model():
 
 def test_train_save_load_compare():
     # Load configuration
-    cfg = OmegaConf.load('/home/elton/dppo/cfg/gym/pretrain/hopper-medium-v2/pre_diffusion_mlp_tf.yaml')
+    cfg = OmegaConf.load('tests/cfg/pre_diffusion_mlp_tf_dummy.yaml')
     cfg.train_dataset_path = "tests/dummy_data/train_dummy.npz"
     with tempfile.TemporaryDirectory() as tmpdirname:
         cfg.logdir = tmpdirname
