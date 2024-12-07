@@ -3,6 +3,16 @@ import numpy as np
 import math
 
 class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSchedule):
+    """Cosine Annealing Learning Rate Scheduler with Warmup and Restarts.
+
+    Args:
+        first_cycle_steps (int): Number of steps for the first cycle.
+        cycle_mult (float, optional): Factor to increase cycle steps. Defaults to 1.0.
+        max_lr (float, optional): Maximum learning rate. Defaults to 0.1.
+        min_lr (float, optional): Minimum learning rate. Defaults to 0.001.
+        warmup_steps (int, optional): Number of warmup steps. Defaults to 0.
+        gamma (float, optional): Decay rate for learning rate after each cycle. Defaults to 1.0.
+    """
     def __init__(
         self,
         first_cycle_steps,
@@ -24,6 +34,14 @@ class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSc
         self.gamma = gamma
 
     def __call__(self, step):
+        """Calculate the learning rate at a given step.
+
+        Args:
+            step (int): The current training step.
+
+        Returns:
+            tf.Tensor: The learning rate for the current step.
+        """
         step = tf.cast(step, tf.float32)
         
         if self.cycle_mult == 1.0:
@@ -68,6 +86,11 @@ class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSc
         return lr
 
     def get_config(self):
+        """Return the configuration of the learning rate schedule.
+
+        Returns:
+            dict: Configuration dictionary.
+        """
         return {
             "first_cycle_steps": self.first_cycle_steps,
             "cycle_mult": self.cycle_mult,

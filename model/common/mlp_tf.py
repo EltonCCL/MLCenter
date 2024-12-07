@@ -9,6 +9,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 import logging
 
+# Dictionary mapping activation type names to their corresponding TensorFlow activation layers
 activation_dict = {
     "ReLU": layers.ReLU(),
     "ELU": layers.ELU(),
@@ -61,10 +62,12 @@ class MLP(tf.keras.Model):
         num_layers = len(dim_list) - 1
 
         if test_mode:
+            # Use ones initializer for deterministic behavior during testing
             ones_initializer = tf.keras.initializers.Ones()
             kernel_initializer = ones_initializer
             bias_initializer = ones_initializer
         else:
+            # Use standard initializers for training
             kernel_initializer = "glorot_uniform"
             bias_initializer = "zeros"
 
@@ -72,8 +75,9 @@ class MLP(tf.keras.Model):
             i_dim = dim_list[idx]
             o_dim = dim_list[idx + 1]
             if append_dim > 0 and self.append_layers and idx in self.append_layers:
-                i_dim += append_dim
+                i_dim += append_dim  # Adjust input dimension if appending data
 
+            # Define a Dense layer with the specified initializer
             dense_layer = layers.Dense(
                 o_dim,
                 kernel_initializer=kernel_initializer,
@@ -84,6 +88,7 @@ class MLP(tf.keras.Model):
             self.module_list.append(dense_layer)
 
             if use_layernorm and (idx < num_layers - 1 or use_layernorm_final):
+                # Add Layer Normalization if enabled
                 layer_norm = layers.LayerNormalization(
                     gamma_initializer="ones" if test_mode else "ones",
                     beta_initializer="zeros",
@@ -91,8 +96,10 @@ class MLP(tf.keras.Model):
                 )
                 self.module_list.append(layer_norm)
             if dropout > 0 and (idx < num_layers - 1 or use_drop_final):
+                # Add Dropout layer if enabled
                 self.module_list.append(layers.Dropout(dropout))
 
+            # Select appropriate activation function
             act = (
                 activation_dict[out_activation_type]
                 if idx == num_layers - 1
@@ -121,6 +128,7 @@ class MLP(tf.keras.Model):
                 and self.append_layers
                 and layer_idx in self.append_layers
             ):
+                # Concatenate additional data at specified layers
                 x = tf.concat([x, append], axis=-1)
             x = layer(x)
         return x

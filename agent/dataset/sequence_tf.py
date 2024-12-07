@@ -29,6 +29,18 @@ class StitchedSequenceDataset:
         use_img=False,
         device="/GPU:0",
     ):
+        """
+        Initializes the StitchedSequenceDataset.
+
+        Args:
+            dataset_path (str): Path to the dataset file (.npz or .pkl).
+            horizon_steps (int, optional): Number of steps in each horizon. Defaults to 64.
+            cond_steps (int, optional): Number of conditioning steps. Defaults to 1.
+            img_cond_steps (int, optional): Number of image conditioning steps. Defaults to 1.
+            max_n_episodes (int, optional): Maximum number of episodes to load. Defaults to 10000.
+            use_img (bool, optional): Flag to include image data. Defaults to False.
+            device (str, optional): Device to use for TensorFlow operations. Defaults to "/GPU:0".
+        """
         self.horizon_steps = horizon_steps
         self.cond_steps = cond_steps
         self.img_cond_steps = img_cond_steps
@@ -137,6 +149,17 @@ class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
         get_mc_return=False,
         **kwargs,
     ):
+        """
+        Initializes the StitchedSequenceQLearningDataset.
+
+        Args:
+            dataset_path (str): Path to the dataset file (.npz or .pkl).
+            max_n_episodes (int, optional): Maximum number of episodes to load. Defaults to 10000.
+            discount_factor (float, optional): Discount factor for reward-to-go calculation. Defaults to 1.0.
+            device (str, optional): Device to use for TensorFlow operations. Defaults to "/GPU:0".
+            get_mc_return (bool, optional): Flag to compute Monte Carlo returns. Defaults to False.
+            **kwargs: Additional keyword arguments passed to the parent class.
+        """
         if dataset_path.endswith(".npz"):
             dataset = np.load(dataset_path, allow_pickle=False)
         elif dataset_path.endswith(".pkl"):
@@ -198,6 +221,15 @@ class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
             log.info(f"Computed reward-to-go for each trajectory.")
 
     def __getitem__(self, idx):
+        """
+        Retrieves a single transition item.
+
+        Args:
+            idx (int): Index of the transition.
+
+        Returns:
+            Transition or TransitionWithReturn: The requested transition data.
+        """
         start, num_before_start = self.indices[idx]
         end = start + self.horizon_steps
         
@@ -255,7 +287,14 @@ class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
 
     def make_indices(self, traj_lengths, horizon_steps):
         """
-        skip last step of truncated episodes
+        Creates indices for dataset transitions
+
+        Args:
+            traj_lengths (list or array): List of trajectory lengths.
+            horizon_steps (int): Number of steps in each horizon.
+
+        Returns:
+            list of tuples: List containing (start_index, num_before_start) tuples.
         """
         num_skip = 0
         indices = []

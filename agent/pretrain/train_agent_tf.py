@@ -16,6 +16,14 @@ log = logging.getLogger(__name__)
 from util.scheduler_tf import CosineAnnealingWarmupRestarts  # Assuming you have TF version
 
 def to_device(x, device='GPU:0'):
+    """
+    Moves the given tensor or dictionary of tensors to the specified device.
+
+    Args:
+        x (tf.Tensor or dict): The tensor or dictionary of tensors to move.
+        device (str, optional): The target device. Defaults to 'GPU:0'.
+    """
+    assert isinstance(device, str), "Device must be a string."
     if isinstance(x, tf.Tensor):
         with tf.device(device):
             return tf.identity(x)
@@ -23,17 +31,33 @@ def to_device(x, device='GPU:0'):
         return {k: to_device(v, device) for k, v in x.items()}
     else:
         print(f"Unrecognized type in `to_device`: {type(x)}")
+        assert False, f"Unrecognized type in `to_device`: {type(x)}"
 
 def batch_to_device(batch, device='GPU:0'):
+    """
+    Moves a batch of data to the specified device.
+
+    Args:
+        batch: The batch of data to move.
+        device (str, optional): The target device. Defaults to 'GPU:0'.
+    
+    Returns:
+        The batch moved to the specified device.
+    """
+    assert hasattr(batch, '_fields'), "Batch must have '_fields' attribute."
     vals = [to_device(getattr(batch, field), device) for field in batch._fields]
     return type(batch)(*vals)
 
 class EMA:
     """
-    Empirical moving average for TensorFlow
+    Empirical Moving Average for TensorFlow models.
+
+    Args:
+        cfg: Configuration parameters containing decay rate.
     """
     def __init__(self, cfg):
         super().__init__()
+        assert hasattr(cfg, 'decay'), "Config must have 'decay' parameter."
         self.beta = cfg.decay
 
     def update_model_average(self, ma_model, current_model):
@@ -51,8 +75,21 @@ class EMA:
         return old * self.beta + (1 - self.beta) * new
 
 class PreTrainAgent:
+    """
+    Parent pre-training agent class in TensorFlow.
+
+    Args:
+        cfg: Configuration parameters for initializing the agent.
+    """
     def __init__(self, cfg):
+        """
+        Initializes the PreTrainAgent with the given configuration.
+
+        Args:
+            cfg: Configuration parameters for setting up the agent.
+        """
         super().__init__()
+        assert isinstance(cfg, dict) or hasattr(cfg, 'get'), "Config must be a dict or OmegaConf object."
         self.seed = cfg.get("seed", 42)
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -60,12 +97,14 @@ class PreTrainAgent:
 
         # Set memory growth for GPUs
         physical_devices = tf.config.list_physical_devices('GPU')
+        assert physical_devices, "No GPU devices found."
         for device in physical_devices:
             tf.config.experimental.set_memory_growth(device, True)
 
         # Wandb
         self.use_wandb = cfg.get("wandb", None)
-        if self.use_wandb  is not None:
+        if self.use_wandb is not None:
+            assert hasattr(cfg.wandb, 'project') and hasattr(cfg.wandb, 'run'), "Wandb config must have 'project' and 'run'."
             wandb.init(
                 # entity=cfg.wandb.entity,
                 project=cfg.wandb.project,
@@ -75,6 +114,7 @@ class PreTrainAgent:
 
         # Build main model
         self.model = hydra.utils.instantiate(cfg.model)
+        assert self.model is not None, "Model instantiation failed."
         self.ema = EMA(cfg.ema)
         
         # Create EMA model with identical configuration
@@ -97,6 +137,8 @@ class PreTrainAgent:
         # Build models by calling them
         _ = self.model(dummy_cond, dummy_deterministic, dummy_fixed_noise)
         _ = self.ema_model(dummy_cond, dummy_deterministic, dummy_fixed_noise)
+        assert self.model.built, "Main model is not built."
+        assert self.ema_model.built, "EMA model is not built."
         
         # Copy weights from main model to EMA model
         self.ema_model.set_weights(self.model.get_weights())
@@ -163,17 +205,27 @@ class PreTrainAgent:
         log.info(f"Finished init pretrain agent")
 
     def run(self):
+        """
+        Executes the training loop for the agent.
+        """
         raise NotImplementedError
 
     def reset_parameters(self):
+        """
+        Resets the parameters of the EMA model to match the main model.
+        """
         # Copy weights from model to ema_model
         for target, source in zip(
             self.ema_model.trainable_variables,
             self.model.trainable_variables
         ):
+            assert source is not None, "Source variable is None."
             target.assign(source)
 
     def step_ema(self):
+        """
+        Updates the EMA model based on the current model parameters.
+        """
         if self.epoch < self.epoch_start_ema:
             self.reset_parameters()
             return
@@ -181,7 +233,7 @@ class PreTrainAgent:
 
     def save_model(self):
         """
-        Saves model and ema to disk
+        Saves the model and EMA to disk.
         """
         checkpoint = tf.train.Checkpoint(
             epoch=tf.Variable(self.epoch),
@@ -199,7 +251,10 @@ class PreTrainAgent:
 
     def load(self, epoch):
         """
-        Loads model and ema from disk
+        Loads the model and EMA from disk for the specified epoch.
+
+        Args:
+            epoch (int): The epoch number to load the model from.
         """
         checkpoint = tf.train.Checkpoint(
             epoch=tf.Variable(0),
