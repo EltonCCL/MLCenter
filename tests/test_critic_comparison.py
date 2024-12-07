@@ -7,11 +7,17 @@ from model.common.critic_tf import CriticObs as TFCriticObs, CriticObsAct as TFC
 
 @pytest.fixture
 def random_seed():
+    """
+    Fixture to set random seeds for reproducibility in tests.
+    """
     torch.manual_seed(42)
     tf.random.set_seed(42)
     np.random.seed(42)
 
 def test_critic_obs_test_mode(random_seed):
+    """
+    Test CriticObs models in test mode for consistent outputs between PyTorch and TensorFlow implementations.
+    """
     # Initialize models
     cond_dim = 64
     torch_critic = TorchCriticObs(cond_dim=cond_dim, mlp_dims=[128, 64], test_mode=True)
@@ -45,6 +51,9 @@ def test_critic_obs_test_mode(random_seed):
     )
 
 def test_critic_obs_regular_mode(random_seed):
+    """
+    Test CriticObs models in regular mode with various configurations to ensure output shapes match between PyTorch and TensorFlow.
+    """
     configs = [
         {"cond_dim": 64, "mlp_dims": [128, 64], "use_layernorm": False},
         {"cond_dim": 32, "mlp_dims": [64, 32], "use_layernorm": True},
@@ -82,6 +91,9 @@ def test_critic_obs_regular_mode(random_seed):
         assert torch_tensor_output.shape == tf_tensor_output.shape
 
 def test_critic_obs_act_test_mode(random_seed):
+    """
+    Test CriticObsAct models in test mode, verifying weight transfer and output consistency between PyTorch and TensorFlow implementations.
+    """
     # Initialize models
     cond_dim = 64
     action_dim = 32
@@ -147,4 +159,7 @@ def test_critic_obs_act_test_mode(random_seed):
         )
 
 if __name__ == "__main__":
+    """
+    Entry point for running the tests using pytest.
+    """
     pytest.main([__file__])
