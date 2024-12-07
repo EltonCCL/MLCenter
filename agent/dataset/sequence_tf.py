@@ -47,28 +47,31 @@ class StitchedSequenceDataset:
         self.max_n_episodes = max_n_episodes
         self.dataset_path = dataset_path
 
-        # Load dataset
-        if dataset_path.endswith(".npz"):
-            dataset = np.load(dataset_path, allow_pickle=False)
-        elif dataset_path.endswith(".pkl"):
-            with open(dataset_path, "rb") as f:
-                dataset = pickle.load(f)
-        else:
-            raise ValueError(f"Unsupported file format: {dataset_path}")
-            
-        traj_lengths = dataset["traj_lengths"][:max_n_episodes]
-        total_num_steps = np.sum(traj_lengths)
+        with tf.device(device):
+            # Load dataset and convert to tensors on the specified device
+            if dataset_path.endswith(".npz"):
+                dataset = np.load(dataset_path, allow_pickle=False)
+            elif dataset_path.endswith(".pkl"):
+                with open(dataset_path, "rb") as f:
+                    dataset = pickle.load(f)
+            else:
+                raise ValueError(f"Unsupported file format: {dataset_path}")
+            traj_lengths = dataset["traj_lengths"][:max_n_episodes]
+            total_num_steps = np.sum(traj_lengths)
+
+            self.states = tf.convert_to_tensor(
+                dataset["states"][:total_num_steps], dtype=tf.float32
+            )
+            self.actions = tf.convert_to_tensor(
+                dataset["actions"][:total_num_steps], dtype=tf.float32
+            )
+            if self.use_img:
+                self.images = tf.convert_to_tensor(
+                    dataset["images"][:total_num_steps], dtype=tf.float32
+                )
 
         # Set up indices for sampling
         self.indices = self.make_indices(traj_lengths, horizon_steps)
-
-        with tf.device(device):
-            # Convert numpy arrays to tf tensors
-            self.states = tf.cast(dataset["states"][:total_num_steps], tf.float32)
-            self.actions = tf.cast(dataset["actions"][:total_num_steps], tf.float32)
-            
-            if self.use_img:
-                self.images = tf.cast(dataset["images"][:total_num_steps], tf.float32)
 
         log.info(f"Loaded dataset from {dataset_path}")
         log.info(f"Number of episodes: {min(max_n_episodes, len(traj_lengths))}")
@@ -134,50 +137,43 @@ class StitchedSequenceDataset:
         return val_indices
 
     def as_tensorflow_dataset(self):
-        """
-        Convert to tf.data.Dataset
-        """
-        def generator():
-            for i in range(len(self)):
-                yield self[i]
+        # Create a TensorFlow Dataset from tensors
+        dataset = tf.data.Dataset.from_tensor_slices(self.indices)
 
-        output_signature = (
-            tf.TensorSpec(shape=(self.horizon_steps, self.actions.shape[-1]), dtype=tf.float32),
-            {
-                "state": tf.TensorSpec(shape=(self.cond_steps, self.states.shape[-1]), dtype=tf.float32),
-                **({"rgb": tf.TensorSpec(shape=(self.img_cond_steps, *self.images.shape[1:]), dtype=tf.float32)} if self.use_img else {})
-            }
-        )
+        def _map_fn(idx):
+            start, num_before_start = idx[0], idx[1]
+            end = start + self.horizon_steps
+            states = self.states[(start - num_before_start):(start + 1)]
+            actions = self.actions[start:end]
 
-        return tf.data.Dataset.from_generator(
-            generator,
-            output_signature=output_signature
+            # Stack observation history
+            states = tf.stack([
+                states[tf.maximum(num_before_start - t, 0)]
+                for t in reversed(range(self.cond_steps))
+            ])
+
+            conditions = {"state": states}
+            if self.use_img:
+                images = self.images[(start - num_before_start):end]
+                images = tf.stack([
+                    images[tf.maximum(num_before_start - t, 0)]
+                    for t in reversed(range(self.img_cond_steps))
+                ])
+                conditions["rgb"] = images
+
+            # Actions and conditions need an extra dimension
+            actions = tf.expand_dims(actions, axis=0)
+            for key in conditions:
+                conditions[key] = tf.expand_dims(conditions[key], axis=0)
+            return actions, conditions
+
+        # Apply the mapping function and optimize the dataset pipeline
+        dataset = dataset.map(
+            lambda idx: _map_fn(idx),
+            num_parallel_calls=tf.data.experimental.AUTOTUNE
         )
-    # def as_tensorflow_dataset(self):
-    #     # Convert data to tensors once instead of generating them repeatedly
-    #     all_actions = []
-    #     all_conditions = {"state": []}
-        
-    #     if self.use_img:
-    #         all_conditions["rgb"] = []
-            
-    #     for i in range(len(self)):
-    #         batch = self[i]
-    #         all_actions.append(batch.actions)
-    #         all_conditions["state"].append(batch.conditions["state"])
-    #         if self.use_img:
-    #             all_conditions["rgb"].append(batch.conditions["rgb"])
-        
-    #     # Stack all data
-    #     dataset = tf.data.Dataset.from_tensor_slices((
-    #         tf.stack(all_actions),
-    #         {
-    #             "state": tf.stack(all_conditions["state"]),
-    #             **({"rgb": tf.stack(all_conditions["rgb"])} if self.use_img else {})
-    #         }
-    #     ))
-        
-    #     return dataset
+        dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+        return dataset
 
 class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
     """

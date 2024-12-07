@@ -119,11 +119,9 @@ class PreTrainAgent:
 
         # Build dataset
         self.dataset_train = hydra.utils.instantiate(cfg.train_dataset)
+        log.info("init complete")
         self.dataloader_train = (
             self.dataset_train.as_tensorflow_dataset()
-            .cache()
-            .batch(self.batch_size)
-            .prefetch(tf.data.AUTOTUNE)
         )
         log.info(f"Finished building dataset")
 
@@ -135,8 +133,6 @@ class PreTrainAgent:
             self.dataset_val.set_indices(val_indices)
             self.dataloader_val = (
                 self.dataset_val.as_tensorflow_dataset()
-                .batch(self.batch_size)
-                .prefetch(tf.data.AUTOTUNE)
             )
         log.info(f"Finished building valid dataset")
 
