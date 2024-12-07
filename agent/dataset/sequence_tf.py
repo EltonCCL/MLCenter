@@ -64,6 +64,9 @@ class StitchedSequenceDataset:
             indices.extend([(i, i - cur_traj_index) for i in range(cur_traj_index, max_start + 1)])
             cur_traj_index += traj_length
         return indices
+    
+    def __len__(self):
+        return len(self.indices)
 
     @tf.function(reduce_retracing=True)
     def _get_item(self, start, num_before_start):
@@ -113,7 +116,7 @@ class StitchedSequenceDataset:
             num_parallel_calls=tf.data.AUTOTUNE
         ).batch(
             batch_size,
-            drop_remainder=True
+            # drop_remainder=True
         ).prefetch(
             tf.data.AUTOTUNE
         )
