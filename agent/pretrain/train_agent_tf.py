@@ -186,7 +186,8 @@ class PreTrainAgent:
         checkpoint = tf.train.Checkpoint(
             epoch=tf.Variable(self.epoch),
             model=self.model,
-            ema_model=self.ema_model
+            ema_model=self.ema_model,
+            optimizer=self.optimizer
         )
         manager = tf.train.CheckpointManager(
             checkpoint,
@@ -203,7 +204,8 @@ class PreTrainAgent:
         checkpoint = tf.train.Checkpoint(
             epoch=tf.Variable(0),
             model=self.model,
-            ema_model=self.ema_model
+            ema_model=self.ema_model,
+            optimizer=self.optimizer
         )
         
         checkpoint_path = os.path.join(
