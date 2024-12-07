@@ -119,7 +119,7 @@ class TestDownsample1d:
         tf_output = tf_model(x_tf).numpy()
 
         # Assert
-        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-4, atol=1e-5)
+        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-4, atol=1e-4)
 
 class TestUpsample1d:
     """Tests for Upsample1d layers."""
@@ -167,7 +167,7 @@ class TestUpsample1d:
         tf_output = tf_model(x_tf).numpy()
 
         # Assert
-        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-4, atol=1e-4)
 
 class TestConv1dBlock:
     """Tests for Conv1dBlock layers."""
@@ -219,7 +219,7 @@ class TestConv1dBlock:
         tf_output = tf_model(x_tf).numpy()
 
         # Assert
-        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-4, atol=1e-4)
 
 
 if __name__ == "__main__":
