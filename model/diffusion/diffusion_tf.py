@@ -1,7 +1,15 @@
+"""
+Gaussian Diffusion Model implementation using TensorFlow.
+
+This module provides the DiffusionModel class, which encapsulates the Gaussian
+Diffusion process for training and sampling in reinforcement learning environments.
+"""
+
 import logging
 import tensorflow as tf
 import numpy as np
 from collections import namedtuple
+from omegaconf import ListConfig
 
 log = logging.getLogger(__name__)
 Sample = namedtuple("Sample", "trajectories chains")
@@ -35,6 +43,7 @@ class DiffusionModel(tf.keras.Model):
         ddim_steps (int, optional): Number of DDIM steps.
         **kwargs: Additional arguments.
     """
+
     def __init__(
         self,
         network,
@@ -71,17 +80,29 @@ class DiffusionModel(tf.keras.Model):
 
         with tf.device(device):
             self.network = network
+            # Remove the explicit build call
+            dummy_input = tf.zeros((1, horizon_steps, action_dim))
+            dummy_time = tf.zeros((1,))  # Usually time is a scalar per batch
+            dummy_cond = {
+                "state": tf.zeros(
+                    (1, self.obs_dim)
+                )  # Adjust based on actual cond structure
+            }
+
             if network_path is not None:
-                checkpoint = tf.keras.models.load_model(network_path)  # Similar to torch.load()
-                if "ema" in checkpoint:
-                    self.network.load_weights(checkpoint["ema"])  # Similar to load_state_dict()
-                    logging.info("Loaded SL-trained policy from %s", network_path)
+                self.network(dummy_input, time=dummy_time, cond=dummy_cond)
+
+                checkpoint = tf.train.Checkpoint(model=self.network)
+                manager = tf.train.CheckpointManager(
+                    checkpoint, network_path, max_to_keep=5
+                )
+                if manager.latest_checkpoint:
+                    # Build the network by calling the model with dummy cond
+
+                    checkpoint.restore(manager.latest_checkpoint).expect_partial()
+                    log.info(f"Loaded model from {manager.latest_checkpoint}")
                 else:
-                    self.network.load_weights(checkpoint["model"])  # Similar to load_state_dict()
-                    logging.info("Loaded RL-trained policy from %s", network_path)
-            # logging.info(
-            #     f"Number of network parameters: {sum(tf.size(p).numpy() for p in self.network.trainable_weights)}"
-            # )
+                    log.warning(f"No checkpoint found at {network_path}")
 
             # DDPM parameters
             self.betas = cosine_beta_schedule(denoising_steps)
@@ -123,14 +144,10 @@ class DiffusionModel(tf.keras.Model):
                 else:
                     raise ValueError("Unknown discretization method for DDIM.")
 
-                # self.ddim_alphas = tf.cast(self.alphas_cumprod[self.ddim_t], tf.float32)
                 self.ddim_alphas = tf.gather(self.alphas_cumprod, self.ddim_t)
                 self.ddim_alphas = tf.cast(self.ddim_alphas, tf.float32)
                 self.ddim_alphas_sqrt = tf.sqrt(self.ddim_alphas)
-                # self.ddim_alphas_prev = tf.concat([
-                #     tf.ones([1], dtype=tf.float32),
-                #     self.alphas_cumprod[self.ddim_t[:-1]]
-                # ], axis=0)
+
                 self.ddim_alphas_prev = tf.concat(
                     [
                         tf.ones((1,), dtype=tf.float32),
@@ -157,6 +174,61 @@ class DiffusionModel(tf.keras.Model):
                     self.ddim_sqrt_one_minus_alphas, [0]
                 )
                 self.ddim_sigmas = tf.reverse(self.ddim_sigmas, [0])
+
+    def get_config(self):
+        """
+        Returns the configuration of the DiffusionModel.
+
+        Converts ListConfig to list if necessary.
+
+        Returns:
+            dict: Configuration dictionary.
+        """
+        config = super().get_config()
+        config.update(
+            {
+                "network": self.network,
+                "horizon_steps": self.horizon_steps,
+                "obs_dim": self.obs_dim,
+                "action_dim": self.action_dim,
+                "network_path": self.network_path,
+                "device": self.device,
+                "denoised_clip_value": self.denoised_clip_value,
+                "randn_clip_value": self.randn_clip_value,
+                "final_action_clip_value": self.final_action_clip_value,
+                "eps_clip_value": self.eps_clip_value,
+                "denoising_steps": self.denoising_steps,
+                "predict_epsilon": self.predict_epsilon,
+                "use_ddim": self.use_ddim,
+                "ddim_discretize": self.ddim_discretize,
+                "ddim_steps": self.ddim_steps,
+                # Convert ListConfig to list if necessary
+                "some_list_param": (
+                    list(self.some_list_param)
+                    if hasattr(self, "some_list_param")
+                    else None
+                ),
+            }
+        )
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        """
+        Creates a DiffusionModel instance from a configuration dictionary.
+
+        Converts lists back to ListConfig if needed.
+
+        Args:
+            config (dict): Configuration dictionary.
+
+        Returns:
+            DiffusionModel: An instance of DiffusionModel.
+        """
+        # Convert lists back to ListConfig if needed
+        if config.get("some_list_param") is not None:
+            config["some_list_param"] = ListConfig(config["some_list_param"])
+        return cls(**config)
 
     def p_mean_var(self, x, t, cond, index=None, network_override=None):
         """
@@ -254,12 +326,6 @@ class DiffusionModel(tf.keras.Model):
                 else:
                     std = tf.clip_by_value(std, 1e-3, float("inf"))
 
-            # noise = tf.clip_by_value(
-            #     tf.random.normal(tf.shape(x)),
-            #     -self.randn_clip_value,
-            #     self.randn_clip_value
-            # )
-            # With:
             if fixed_noise is not None:
                 noise = tf.clip_by_value(
                     fixed_noise, -self.randn_clip_value, self.randn_clip_value
