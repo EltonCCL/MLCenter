@@ -184,14 +184,6 @@ class VPGDiffusion(DiffusionModel):
         deterministic=False,
     ):
         # Dynamically determine the concatenation dimension
-        cond_state = cond["state"]
-        expected_dim = (
-            self.config.expected_input_dim
-        )  # Ensure this is set in the configuration
-        assert (
-            tf.shape(x)[-1] + tf.shape(cond_state)[-1] == expected_dim
-        ), "Input dimensions mismatch."
-        x = tf.concat([x, cond_state], axis=-1)
         noise = self.actor(x, t, cond=cond)
         if self.use_ddim:
             ft_indices = tf.where(index >= (self.ddim_steps - self.ft_denoising_steps))[
