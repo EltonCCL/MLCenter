@@ -20,7 +20,8 @@ class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSc
         max_lr=0.1,
         min_lr=0.001,
         warmup_steps=0,
-        gamma=1.0
+        gamma=1.0,
+        n_critic_warmup_itr = 0,
     ):
         super().__init__()
         assert warmup_steps < first_cycle_steps
@@ -32,6 +33,7 @@ class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSc
         self.min_lr = min_lr
         self.warmup_steps = warmup_steps
         self.gamma = gamma
+        self.n_critic_warmup_itr = n_critic_warmup_itr
 
     def __call__(self, step):
         """Calculate the learning rate at a given step.
@@ -43,21 +45,23 @@ class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSc
             tf.Tensor: The learning rate for the current step.
         """
         step = tf.cast(step, tf.float32)
+
+        effective_step = tf.maximum(step - self.n_critic_warmup_itr, 0)
         
         if self.cycle_mult == 1.0:
             # Simple case: fixed cycle length
-            cycle = tf.floor(step / self.first_cycle_steps)
-            step_in_cycle = step % self.first_cycle_steps
+            cycle = tf.floor(effective_step / self.first_cycle_steps)
+            step_in_cycle = effective_step % self.first_cycle_steps
             current_cycle_steps = self.first_cycle_steps
         else:
             # Complex case: increasing cycle length
             n = tf.math.log(
-                step / self.first_cycle_steps * (self.cycle_mult - 1) + 1
+                effective_step / self.first_cycle_steps * (self.cycle_mult - 1) + 1
             ) / tf.math.log(self.cycle_mult)
             n = tf.floor(n)
             
             cycle = n
-            step_in_cycle = step - self.first_cycle_steps * (
+            step_in_cycle = effective_step - self.first_cycle_steps * (
                 tf.pow(self.cycle_mult, n) - 1
             ) / (self.cycle_mult - 1)
             current_cycle_steps = self.first_cycle_steps * tf.pow(self.cycle_mult, n)
@@ -97,5 +101,6 @@ class CosineAnnealingWarmupRestarts(tf.keras.optimizers.schedules.LearningRateSc
             "max_lr": self.base_max_lr,
             "min_lr": self.min_lr,
             "warmup_steps": self.warmup_steps,
-            "gamma": self.gamma
+            "gamma": self.gamma,
+            "n_critic_warmup_itr": self.n_critic_warmup_itr
         }

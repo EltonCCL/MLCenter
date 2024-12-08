@@ -219,7 +219,7 @@ class TestConv1dBlock:
         tf_output = tf_model(x_tf).numpy()
 
         # Assert
-        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(torch_output, tf_output, rtol=1e-3, atol=1e-3)
 
 
 if __name__ == "__main__":

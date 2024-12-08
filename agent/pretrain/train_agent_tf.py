@@ -164,7 +164,7 @@ class PreTrainAgent:
         self.dataloader_train = (
             self.dataset_train.as_tensorflow_dataset(
                 batch_size=self.batch_size,
-            )
+            ).cache()
         )
         log.info(f"Finished building dataset")
 
