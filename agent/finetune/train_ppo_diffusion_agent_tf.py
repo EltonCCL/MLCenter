@@ -253,9 +253,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                         logprobs.reshape(1, *logprobs.shape)
                     )  # Keep all dimensions
                 logprobs_trajs = np.vstack(logprobs_trajs)
-                log.info(f"obs_ts: {len(obs_ts)} {obs_ts[0]['state'].shape}")
-                log.info(f"chains_ts_k: {len(chains_ts_k)} {chains_ts_k[0].shape}")
-                log.info(f"logprobs_trajs: {logprobs_trajs.shape}")
 
                 # Normalize rewards if enabled
                 if self.reward_scale_running:
@@ -310,7 +307,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     tf.convert_to_tensor(advantages_trajs, dtype=tf.float32), [-1]
                 )
                 logprobs_k = tf.convert_to_tensor(logprobs_trajs, dtype=tf.float32)
-                log.info(f"logprobs_k: {logprobs_k.shape}")
 
                 # Initialize variables for tracking
                 total_steps = self.n_steps * self.n_envs * self.model.ft_denoising_steps
@@ -320,31 +316,19 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 for update_epoch in range(self.update_epochs):
                     # Shuffle the data indices for this epoch
                     inds_k = tf.random.shuffle(tf.range(total_steps))
-                    log.info(f"total_steps: {total_steps}")
                     num_batch = max(1, total_steps // self.batch_size)
                     for batch in range(num_batch):
                         start = batch * self.batch_size
                         end = start + self.batch_size
                         inds_b = inds_k[start:end]
-                        log.info(f"inds_k: {inds_k.shape}")
-                        log.info(f"start: {start}")
-                        log.info(f"end: {end}")
 
                         # Unravel indices for batching
                         batch_inds_b, denoising_inds_b = tf.unravel_index(
                             inds_b,
                             (self.n_steps * self.n_envs, self.model.ft_denoising_steps),
                         )
-                        log.info(f"inds_b: {inds_b.shape}")
-                        log.info(f"self.n_steps: {self.n_steps}")
-                        log.info(f"self.n_envs: {self.n_envs}")
-                        log.info(
-                            f"self.model.ft_denoising_steps: {self.model.ft_denoising_steps}"
-                        )
 
                         # Gather observations for the current batch
-                        log.info(f"obs_k: {obs_k['state'].shape}")
-                        log.info(f"batch_inds_b: {batch_inds_b.shape}")
                         obs_b = {"state": tf.gather(obs_k["state"], batch_inds_b)}
 
                         # Use advanced indexing to gather chains
@@ -366,19 +350,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
 
                         with tf.GradientTape() as tape:
                             # Compute losses
-                            log.info(f"chains_k: {chains_k.shape}")  # same
-                            log.info(f"obs_b: {obs_b['state'].shape}")  # not
-                            log.info(f"returns_k: {returns_k.shape}")
-                            log.info(f"values_k: {values_k.shape}")
-                            log.info(f"advantages_k: {advantages_k.shape}")
-                            log.info(f"logprobs_b: {logprobs_b.shape}")
-                            log.info(f"chains_prev_b: {chains_prev_b.shape}")
-                            log.info(f"chains_next_b: {chains_next_b.shape}")
-                            log.info(f"denoising_inds_b: {denoising_inds_b.shape}")
-                            log.info(f"returns_b: {returns_b.shape}")
-                            log.info(f"values_b: {values_b.shape}")
-                            log.info(f"advantages_b: {advantages_b.shape}")
-                            log.info(f"logprobs_b: {logprobs_b.shape}")
                             (
                                 pg_loss,
                                 entropy_loss,
@@ -507,13 +478,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     run_results[-1]["eval_best_reward"] = avg_best_reward
                 else:
                     # Logging for training mode
-                    log.info(f"loss: {type(loss)} {loss.numpy()}")
-                    log.info(f"pg_loss: {type(pg_loss)}")
-                    log.info(f"v_loss: {type(v_loss)}")
-                    log.info(f"bc_loss: {type(bc_loss)}")
-                    log.info(f"avg_episode_reward: {type(avg_episode_reward)}")
-                    log.info(f"eta: {type(eta)}")
-                    log.info(f"t: {type(time)}")
                     log.info(
                         f"{self.itr}: step {cnt_train_step:8d} | loss {loss.numpy():8.4f} | pg loss {pg_loss.numpy():8.4f} | value loss {v_loss.numpy():8.4f} | bc loss {bc_loss:8.4f} | reward {avg_episode_reward:8.4f} | eta {eta.numpy():8.4f} | t:{time:8.4f}"
                     )
