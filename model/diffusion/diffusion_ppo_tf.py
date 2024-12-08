@@ -182,6 +182,7 @@ class PPODiffusion(VPGDiffusion):
         pg_loss = tf.reduce_mean(tf.maximum(pg_loss1, pg_loss2))
 
         newvalues = self.critic(obs)
+        newvalues = tf.reshape(newvalues, [-1])
         if self.clip_vloss_coef is not None:
             v_loss_unclipped = tf.square(newvalues - returns)
             v_clipped = oldvalues + tf.clip_by_value(newvalues - oldvalues, -self.clip_vloss_coef, self.clip_vloss_coef)
@@ -189,6 +190,8 @@ class PPODiffusion(VPGDiffusion):
             v_loss_max = tf.maximum(v_loss_unclipped, v_loss_clipped)
             v_loss = 0.5 * tf.reduce_mean(v_loss_max)
         else:
+            # log.info(f"newvalues: {newvalues.shape}, returns: {returns.shape}")
+            # log.info(f"newvalues: {type(newvalues)}, returns: {(returns)}")
             v_loss = 0.5 * tf.reduce_mean(tf.square(newvalues - returns))
 
         return (
