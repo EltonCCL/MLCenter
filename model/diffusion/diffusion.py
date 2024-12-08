@@ -27,6 +27,27 @@ Sample = namedtuple("Sample", "trajectories chains")
 
 
 class DiffusionModel(nn.Module):
+    """
+    Gaussian Diffusion Model with optional DDIM sampling.
+
+    Args:
+        network (nn.Module): The neural network model.
+        horizon_steps (int): Number of horizon steps.
+        obs_dim (int): Dimension of observations.
+        action_dim (int): Dimension of actions.
+        network_path (str, optional): Path to the network weights.
+        device (str, optional): Device to run the model on.
+        denoised_clip_value (float, optional): Clipping value for denoised output.
+        randn_clip_value (float, optional): Clipping value for random noise.
+        final_action_clip_value (float, optional): Clipping value for final actions.
+        eps_clip_value (float, optional): Clipping value for epsilon (DDIM only).
+        denoising_steps (int, optional): Number of denoising steps.
+        predict_epsilon (bool, optional): Whether to predict epsilon.
+        use_ddim (bool, optional): Whether to use DDIM sampling.
+        ddim_discretize (str, optional): DDIM discretization method.
+        ddim_steps (int, optional): Number of DDIM steps.
+        **kwargs: Additional arguments.
+    """
 
     def __init__(
         self,
@@ -198,11 +219,24 @@ class DiffusionModel(nn.Module):
     # ---------- Sampling ----------#
 
     def p_mean_var(self, x, t, cond, index=None, network_override=None):
+        """
+        Compute the mean and variance for the denoising step.
+
+        Args:
+            x (Tensor): Current sample.
+            t (Tensor): Timesteps.
+            cond (dict): Conditioning information.
+            index (Tensor, optional): Index for DDIM.
+            network_override (callable, optional): Override network function.
+
+        Returns:
+            Tuple[Tensor, Tensor]: Mean and log variance.
+        """
+
         if network_override is not None:
             noise = network_override(x, t, cond=cond)
         else:
             noise = self.network(x, t, cond=cond)
-
         # Predict x_0
         if self.predict_epsilon:
             if self.use_ddim:
@@ -230,7 +264,6 @@ class DiffusionModel(nn.Module):
             if self.use_ddim:
                 # re-calculate noise based on clamped x_recon - default to false in HF, but let's use it here
                 noise = (x - alpha ** (0.5) * x_recon) / sqrt_one_minus_alpha
-
         # Clip epsilon for numerical stability in policy gradient - not sure if this is helpful yet, but the value can be huge sometimes. This has no effect if DDPM is used
         if self.use_ddim and self.eps_clip_value is not None:
             noise.clamp_(-self.eps_clip_value, self.eps_clip_value)
@@ -256,10 +289,11 @@ class DiffusionModel(nn.Module):
                 + extract(self.ddpm_mu_coef2, t, x.shape) * x
             )
             logvar = extract(self.ddpm_logvar_clipped, t, x.shape)
+
         return mu, logvar
 
     @torch.no_grad()
-    def forward(self, cond, deterministic=True):
+    def forward(self, cond, deterministic=True, fixed_noise=None):
         """
         Forward pass for sampling actions. Used in evaluating pre-trained/fine-tuned policy. Not modifying diffusion clipping
 
@@ -276,11 +310,16 @@ class DiffusionModel(nn.Module):
         B = len(sample_data)
 
         # Loop
-        x = torch.randn((B, self.horizon_steps, self.action_dim), device=device)
+        if fixed_noise is not None:
+            x = fixed_noise
+        else:
+            x = torch.randn((B, self.horizon_steps, self.action_dim), device=device)
+
         if self.use_ddim:
             t_all = self.ddim_t
         else:
             t_all = list(reversed(range(self.denoising_steps)))
+
         for i, t in enumerate(t_all):
             t_b = make_timesteps(B, t, device)
             index_b = make_timesteps(B, i, device)
@@ -300,9 +339,16 @@ class DiffusionModel(nn.Module):
                     std = torch.zeros_like(std)
                 else:
                     std = torch.clip(std, min=1e-3)
-            noise = torch.randn_like(x).clamp_(
-                -self.randn_clip_value, self.randn_clip_value
-            )
+            # noise = torch.randn_like(x).clamp_(
+            #     -self.randn_clip_value, self.randn_clip_value
+            # )
+            if fixed_noise is not None:
+                noise = fixed_noise.clamp(-self.randn_clip_value, self.randn_clip_value)
+            else:
+                noise = torch.randn_like(x).clamp_(
+                    -self.randn_clip_value, self.randn_clip_value
+                )
+
             x = mean + std * noise
 
             # clamp action at final step
@@ -310,11 +356,22 @@ class DiffusionModel(nn.Module):
                 x = torch.clamp(
                     x, -self.final_action_clip_value, self.final_action_clip_value
                 )
+
         return Sample(x, None)
 
     # ---------- Supervised training ----------#
 
     def loss(self, x, *args):
+        """
+        Compute the loss for training.
+
+        Args:
+            x (Tensor): Input data.
+            *args: Additional arguments.
+
+        Returns:
+            Tensor: Loss value.
+        """
         batch_size = len(x)
         t = torch.randint(
             0, self.denoising_steps, (batch_size,), device=x.device

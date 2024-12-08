@@ -1,37 +1,49 @@
 """
-Parent fine-tuning agent class.
-
+TrainAgent module for fine-tuning agents using TensorFlow.
 """
 
 import os
 import numpy as np
+import tensorflow as tf
 from omegaconf import OmegaConf
-import torch
+import random
 import hydra
 import logging
 import wandb
-import random
 
 log = logging.getLogger(__name__)
-from env.gym_utils import make_async
+from env.gym_utils import make_async  # Ensure this is compatible with TensorFlow
 
 
 class TrainAgent:
+    """
+    Handles the training process of agents using TensorFlow.
+
+    Args:
+        cfg: Configuration object containing training parameters and settings.
+    """
 
     def __init__(self, cfg):
+        """
+        Initializes the TrainAgent with the given configuration.
+
+        Args:
+            cfg: Configuration object containing training parameters and settings.
+        """
         super().__init__()
         self.cfg = cfg
-        self.device = cfg.device
+        self.device = (
+            cfg.device
+        )  # In TensorFlow, device placement is handled differently
         self.seed = cfg.get("seed", 42)
         random.seed(self.seed)
         np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
+        tf.random.set_seed(self.seed)
 
         # Wandb
         self.use_wandb = cfg.get("wandb", None)
         if self.use_wandb is not None:
             wandb.init(
-                # entity=cfg.wandb.entity,
                 project=cfg.wandb.project,
                 name=cfg.wandb.run,
                 config=OmegaConf.to_container(cfg, resolve=True),
@@ -59,8 +71,7 @@ class TrainAgent:
         if not env_type == "furniture":
             self.venv.seed(
                 [self.seed + i for i in range(cfg.env.n_envs)]
-            )  # otherwise parallel envs might have the same initial states!
-            # isaacgym environments do not need seeding
+            )  # Ensure different seeds for each env
         self.n_envs = cfg.env.n_envs
         self.n_cond_step = cfg.cond_steps
         self.obs_dim = cfg.obs_dim
@@ -74,13 +85,14 @@ class TrainAgent:
             cfg.env.specific.get("sparse_reward", False)
             if "specific" in cfg.env
             else False
-        )  # furniture specific, for best reward calculation
+        )
 
         # Batch size for gradient update
         self.batch_size: int = cfg.train.batch_size
 
         # Build model and load checkpoint
         self.model = hydra.utils.instantiate(cfg.model)
+        # Ensure the TensorFlow model is compiled if necessary
 
         # Training params
         self.itr = 0
@@ -118,38 +130,57 @@ class TrainAgent:
             else None
         )
 
+        # Checkpointing
+        self.checkpoint = tf.train.Checkpoint(
+            itr=tf.Variable(self.itr), model=self.model
+        )
+        # Restore if necessary
+
     def run(self):
+        """
+        Executes the training loop.
+        """
         pass
 
     def save_model(self):
         """
-        saves model to disk; no ema
+        Saves the current model checkpoint to disk.
         """
-        data = {
-            "itr": self.itr,
-            "model": self.model.state_dict(),
-        }
-        savepath = os.path.join(self.checkpoint_dir, f"state_{self.itr}.pt")
-        torch.save(data, savepath)
+        savepath = os.path.join(self.checkpoint_dir, f"state_{self.itr}.ckpt")
+        self.checkpoint.itr.assign(self.itr)
+        self.checkpoint.write(savepath)
         log.info(f"Saved model to {savepath}")
 
     def load(self, itr):
         """
-        loads model from disk
-        """
-        loadpath = os.path.join(self.checkpoint_dir, f"state_{itr}.pt")
-        data = torch.load(loadpath, weights_only=True)
+        Loads a model checkpoint from disk.
 
-        self.itr = data["itr"]
-        self.model.load_state_dict(data["model"])
+        Args:
+            itr: The iteration number of the checkpoint to load.
+        """
+        loadpath = os.path.join(self.checkpoint_dir, f"state_{itr}.ckpt")
+        self.checkpoint.restore(loadpath).assert_consumed()
+        self.itr = int(self.checkpoint.itr.numpy())
+        log.info(f"Loaded model from {loadpath}")
 
     def reset_env_all(self, verbose=False, options_venv=None, **kwargs):
+        """
+        Resets all environments with the given options.
+
+        Args:
+            verbose (bool): If True, logs the reset actions.
+            options_venv: Specific options for each environment.
+            **kwargs: Additional keyword arguments for environment reset.
+
+        Returns:
+            obs_venv: The observations after resetting the environments.
+        """
         if options_venv is None:
             options_venv = [
                 {k: v for k, v in kwargs.items()} for _ in range(self.n_envs)
             ]
         obs_venv = self.venv.reset_arg(options_list=options_venv)
-        # convert to OrderedDict if obs_venv is a list of dict
+        # Convert to dictionary of stacked numpy arrays if necessary
         if isinstance(obs_venv, list):
             obs_venv = {
                 key: np.stack([obs_venv[i][key] for i in range(self.n_envs)])
@@ -163,6 +194,16 @@ class TrainAgent:
         return obs_venv
 
     def reset_env(self, env_ind, verbose=False):
+        """
+        Resets a single environment specified by its index.
+
+        Args:
+            env_ind: The index of the environment to reset.
+            verbose (bool): If True, logs the reset action.
+
+        Returns:
+            obs: The observation after resetting the environment.
+        """
         task = {}
         obs = self.venv.reset_one_arg(env_ind=env_ind, options=task)
         if verbose:

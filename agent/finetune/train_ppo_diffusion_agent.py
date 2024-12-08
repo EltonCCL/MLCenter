@@ -1,6 +1,8 @@
 """
-DPPO fine-tuning.
+DPPO fine-tuning agent for training with diffusion models.
 
+This module contains the TrainPPODiffusionAgent class, which extends TrainPPOAgent
+to incorporate diffusion model fine-tuning.
 """
 
 import os
@@ -19,6 +21,13 @@ from util.scheduler import CosineAnnealingWarmupRestarts
 
 
 class TrainPPODiffusionAgent(TrainPPOAgent):
+    """
+    DPPO Agent for fine-tuning with diffusion models.
+
+    Args:
+        cfg (dict): Configuration dictionary containing training parameters.
+    """
+
     def __init__(self, cfg):
         super().__init__(cfg)
 
@@ -45,6 +54,12 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
             )
 
     def run(self):
+        """
+        Execute the training loop for the DPPO agent.
+
+        This method handles the main training iterations, including environment
+        interaction, policy updates, and logging.
+        """
         # Start training loop
         timer = Timer()
         run_results = []

@@ -95,6 +95,7 @@ class PreTrainAgent:
         self.save_model_freq = cfg.train.save_model_freq
 
         # Build dataset
+        log.info(f"Building dataset")
         self.dataset_train = hydra.utils.instantiate(cfg.train_dataset)
         self.dataloader_train = torch.utils.data.DataLoader(
             self.dataset_train,
@@ -103,7 +104,10 @@ class PreTrainAgent:
             shuffle=True,
             pin_memory=True if self.dataset_train.device == "cpu" else False,
         )
+        log.info(f"Finished building dataset")
+        
         self.dataloader_val = None
+
         if "train_split" in cfg.train and cfg.train.train_split < 1:
             val_indices = self.dataset_train.set_train_val_split(cfg.train.train_split)
             self.dataset_val = deepcopy(self.dataset_train)

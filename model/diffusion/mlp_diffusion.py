@@ -1,6 +1,5 @@
 """
 MLP models for diffusion policies.
-
 """
 
 import torch
@@ -17,7 +16,7 @@ log = logging.getLogger(__name__)
 
 
 class VisionDiffusionMLP(nn.Module):
-    """With ViT backbone"""
+    """MLP model with ViT backbone for vision-based diffusion policies."""
 
     def __init__(
         self,
@@ -38,6 +37,27 @@ class VisionDiffusionMLP(nn.Module):
         num_img=1,
         augment=False,
     ):
+        """
+        Initializes the VisionDiffusionMLP.
+
+        Args:
+            backbone: Vision backbone model.
+            action_dim (int): Dimension of the action space.
+            horizon_steps (int): Number of horizon steps.
+            cond_dim (int): Dimension of the conditioning input.
+            img_cond_steps (int, optional): Number of image conditioning steps. Defaults to 1.
+            time_dim (int, optional): Dimension of the time embedding. Defaults to 16.
+            mlp_dims (list, optional): Dimensions of MLP layers. Defaults to [256, 256].
+            activation_type (str, optional): Type of activation function. Defaults to "Mish".
+            out_activation_type (str, optional): Type of output activation. Defaults to "Identity".
+            use_layernorm (bool, optional): Whether to use layer normalization. Defaults to False.
+            residual_style (bool, optional): Whether to use residual connections. Defaults to False.
+            spatial_emb (int, optional): Dimension of spatial embeddings. Defaults to 0.
+            visual_feature_dim (int, optional): Dimension of visual features. Defaults to 128.
+            dropout (float, optional): Dropout rate. Defaults to 0.
+            num_img (int, optional): Number of images. Defaults to 1.
+            augment (bool, optional): Whether to apply augmentation. Defaults to False.
+        """
         super().__init__()
 
         # vision
@@ -164,14 +184,16 @@ class VisionDiffusionMLP(nn.Module):
         # append time and cond
         time = time.view(B, 1)
         time_emb = self.time_embedding(time).view(B, self.time_dim)
+        
         x = torch.cat([x, time_emb, cond_encoded], dim=-1)
 
         # mlp
         out = self.mlp_mean(x)
         return out.view(B, Ta, Da)
 
-
+            
 class DiffusionMLP(nn.Module):
+    """MLP model for diffusion policies without vision input."""
 
     def __init__(
         self,
@@ -185,15 +207,39 @@ class DiffusionMLP(nn.Module):
         out_activation_type="Identity",
         use_layernorm=False,
         residual_style=False,
+        test_mode=False,
     ):
+        """
+        Initializes the DiffusionMLP.
+
+        Args:
+            action_dim (int): Dimension of the action space.
+            horizon_steps (int): Number of horizon steps.
+            cond_dim (int): Dimension of the conditioning input.
+            time_dim (int, optional): Dimension of the time embedding. Defaults to 16.
+            mlp_dims (list, optional): Dimensions of MLP layers. Defaults to [256, 256].
+            cond_mlp_dims (list, optional): Dimensions of conditional MLP layers. Defaults to None.
+            activation_type (str, optional): Type of activation function. Defaults to "Mish".
+            out_activation_type (str, optional): Type of output activation. Defaults to "Identity".
+            use_layernorm (bool, optional): Whether to use layer normalization. Defaults to False.
+            residual_style (bool, optional): Whether to use residual connections. Defaults to False.
+        """
         super().__init__()
         output_dim = action_dim * horizon_steps
-        self.time_embedding = nn.Sequential(
+        self.test_mode = test_mode
+        if test_mode:
+            self.time_embedding = nn.Sequential(
             SinusoidalPosEmb(time_dim),
-            nn.Linear(time_dim, time_dim * 2),
             nn.Mish(),
-            nn.Linear(time_dim * 2, time_dim),
         )
+        else:
+            self.time_embedding = nn.Sequential(
+                SinusoidalPosEmb(time_dim),
+                nn.Linear(time_dim, time_dim * 2),
+                nn.Mish(),
+                nn.Linear(time_dim * 2, time_dim),
+            )
+
         if residual_style:
             model = ResidualMLP
         else:
@@ -203,6 +249,7 @@ class DiffusionMLP(nn.Module):
                 [cond_dim] + cond_mlp_dims,
                 activation_type=activation_type,
                 out_activation_type="Identity",
+                test_mode=test_mode,
             )
             input_dim = time_dim + action_dim * horizon_steps + cond_mlp_dims[-1]
         else:
@@ -212,6 +259,7 @@ class DiffusionMLP(nn.Module):
             activation_type=activation_type,
             out_activation_type=out_activation_type,
             use_layernorm=use_layernorm,
+            test_mode=test_mode,
         )
         self.time_dim = time_dim
 
@@ -223,13 +271,14 @@ class DiffusionMLP(nn.Module):
         **kwargs,
     ):
         """
-        x: (B, Ta, Da)
-        time: (B,) or int, diffusion step
-        cond: dict with key state/rgb; more recent obs at the end
-            state: (B, To, Do)
+        Forward pass for DiffusionMLP.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, Ta, Da).
+            time (torch.Tensor or int): Diffusion step, shape (B,).
+            cond (dict): Conditioning dictionary with key 'state'.
         """
         B, Ta, Da = x.shape
-
         # flatten chunk
         x = x.view(B, -1)
 
@@ -244,7 +293,7 @@ class DiffusionMLP(nn.Module):
         time = time.view(B, 1)
         time_emb = self.time_embedding(time).view(B, self.time_dim)
         x = torch.cat([x, time_emb, state], dim=-1)
-
         # mlp head
         out = self.mlp_mean(x)
+
         return out.view(B, Ta, Da)
