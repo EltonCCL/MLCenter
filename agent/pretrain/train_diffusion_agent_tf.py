@@ -57,11 +57,10 @@ class TrainDiffusionAgent(PreTrainAgent):
         cnt_batch = 0
         log.info("Starting training")
         for epoch in range(self.n_epochs):
-            log.info(f"Epoch {epoch}")
             # Training
             train_loss_metric = tf.keras.metrics.Mean()
         
-            for batch_train in tqdm(self.dataloader_train):
+            for batch_train in self.dataloader_train:
                 loss_train = self.train_step(batch_train)
                 train_loss_metric.update_state(loss_train)
                 
