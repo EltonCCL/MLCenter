@@ -76,6 +76,27 @@ class StitchedSequenceDataset:
             indices.extend([(i, i - cur_traj_index) for i in range(cur_traj_index, max_start + 1)])
             cur_traj_index += traj_length
         return indices
+
+    def set_train_val_split(self, train_split):
+        """
+        Splits the dataset into training and validation sets.
+
+        Args:
+            train_split (float): The proportion of the dataset to include in the
+                training split (0.0 to 1.0).
+
+        Returns:
+            val_indices (list): List of indices used for validation set
+        """
+        num_train = int(len(self.indices) * train_split)
+        train_indices = random.sample(self.indices, num_train)
+        val_indices = [i for i in self.indices if i not in train_indices]
+
+        # Update self.indices to only contain training indices
+        self.train_indices = train_indices
+        self.val_indices = val_indices
+
+        return val_indices
     
     def __len__(self):
         return len(self.indices)
@@ -126,6 +147,7 @@ class StitchedSequenceDataset:
         dataset = dataset.map(
             map_fn, 
             num_parallel_calls=tf.data.AUTOTUNE
+        ).cache(
         ).batch(
             batch_size,
             # drop_remainder=True
