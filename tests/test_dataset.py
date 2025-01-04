@@ -2,8 +2,20 @@ import pytest
 import numpy as np
 import torch
 import tensorflow as tf
+import os
+from pathlib import Path
 from agent.dataset.sequence import StitchedSequenceDataset as TorchDataset
 from agent.dataset.sequence_tf import StitchedSequenceDataset as TFDataset
+
+DATA_DIR = os.environ['DPPO_DATA_DIR']
+ENV = 'hopper-medium-v2'
+DIR = f"{DATA_DIR}/gym/{ENV}"
+if not os.path.isfile(f"{DIR}/train.npz"):
+    Path(f"{DIR}").mkdir(parents=True, exist_ok=True)
+    import gdown
+    url = "https://drive.google.com/drive/u/1/folders/18Ti-92XVq3sE24K096WAxjC_SCCngeHd"
+    os
+    gdown.download_folder(url=url, output=DIR)
 
 @pytest.fixture
 def dataset_params():
