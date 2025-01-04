@@ -101,7 +101,10 @@ class StitchedSequenceDataset:
     def __len__(self):
         return len(self.indices)
 
+    @tf.function(reduce_retracing=True)
     def _get_item(self, start, num_before_start):
+        # print("start", start, type(start))
+        # print("num_before_start", num_before_start, type(num_before_start))
         end = start + self.horizon_steps
         
         # Get states and actions
@@ -241,7 +244,7 @@ class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
                 
             log.info(f"Computed reward-to-go for each trajectory.")
 
-    # @tf.function(reduce_retracing=True)
+    @tf.function(reduce_retracing=True)
     def __getitem__(self, idx):
         """
         Retrieves a single transition item.

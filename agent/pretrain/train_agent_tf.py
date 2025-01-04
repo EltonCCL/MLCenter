@@ -199,7 +199,7 @@ class PreTrainAgent:
         )
 
         self.optimizer = tf.keras.optimizers.AdamW(
-            learning_rate=self.lr_scheduler,
+            learning_rate=cfg.train.learning_rate,
             weight_decay=cfg.train.weight_decay
         )
 
