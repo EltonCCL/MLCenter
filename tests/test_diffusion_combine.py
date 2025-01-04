@@ -9,6 +9,12 @@ from model.diffusion.diffusion import DiffusionModel as PyTorchDiffusionModel
 from model.diffusion.diffusion_tf import DiffusionModel as TensorFlowDiffusionModel, Sample as TF_Sample
 from collections import namedtuple
 
+@pytest.fixture(autouse=True)
+def run_eager():
+    tf.config.run_functions_eagerly(True)
+    yield
+    tf.config.run_functions_eagerly(False)
+
 @pytest.fixture(scope="session", autouse=True)
 def set_random_seeds():
     """

@@ -8,6 +8,12 @@ import numpy as np
 from copy import deepcopy
 import tensorflow as tf
 
+@pytest.fixture(autouse=True)
+def run_eager():
+    tf.config.run_functions_eagerly(True)
+    yield
+    tf.config.run_functions_eagerly(False)
+
 # Configure GPU at module level
 physical_devices = tf.config.list_physical_devices('GPU')
 for device in physical_devices:
