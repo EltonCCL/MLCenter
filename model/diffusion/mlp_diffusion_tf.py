@@ -84,6 +84,7 @@ class DiffusionMLP(keras.Model):
         )
         self.time_dim = time_dim
 
+    @tf.function
     def call(self, x, time, cond, training=False, **kwargs):
         """Forward pass for DiffusionMLP.
 
@@ -96,6 +97,7 @@ class DiffusionMLP(keras.Model):
         Returns:
             tf.Tensor: Output tensor of shape (B, Ta, Da).
         """
+        # tf.print("Retracing:", tf.shape(x), type(x), tf.shape(time), type(time), tf.shape(cond["state"]), type(cond["state"]))
         B = tf.shape(x)[0]
         Ta = tf.shape(x)[1]
         Da = tf.shape(x)[2]

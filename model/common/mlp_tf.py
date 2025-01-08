@@ -217,6 +217,7 @@ class TwoLayerPreActivationResNetLinear(tf.keras.layers.Layer):
             self.norm2 = layers.LayerNormalization(epsilon=1e-6)
         # Dropout not implemented; add if needed
 
+
     def call(self, inputs):
         """
         Perform the forward pass of the Residual block.
@@ -227,6 +228,7 @@ class TwoLayerPreActivationResNetLinear(tf.keras.layers.Layer):
         Returns:
             tf.Tensor: Output tensor after applying residual connections.
         """
+        # tf.print("inputs", tf.shape(inputs), type(inputs))
         x_input = inputs
         if self.use_layernorm:
             x = self.norm1(inputs)

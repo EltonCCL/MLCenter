@@ -29,24 +29,12 @@ class StitchedSequenceDataset:
         use_img=False,
         device="/GPU:0",
     ):
-        """
-        Initializes the StitchedSequenceDataset.
-
-        Args:
-            dataset_path (str): Path to the dataset file (.npz or .pkl).
-            horizon_steps (int, optional): Number of steps in each horizon. Defaults to 64.
-            cond_steps (int, optional): Number of conditioning steps. Defaults to 1.
-            img_cond_steps (int, optional): Number of image conditioning steps. Defaults to 1.
-            max_n_episodes (int, optional): Maximum number of episodes to load. Defaults to 10000.
-            use_img (bool, optional): Flag to include image data. Defaults to False.
-            device (str, optional): Device to use for TensorFlow operations. Defaults to "/GPU:0".
-        """
         self.horizon_steps = horizon_steps
         self.cond_steps = cond_steps
         self.img_cond_steps = img_cond_steps
         self.use_img = use_img
 
-        # Load dataset
+        # Load dataset with numpy first
         if dataset_path.endswith(".npz"):
             dataset = np.load(dataset_path, allow_pickle=False)
         elif dataset_path.endswith(".pkl"):
@@ -59,106 +47,105 @@ class StitchedSequenceDataset:
         traj_lengths = dataset["traj_lengths"][:max_n_episodes]
         total_num_steps = np.sum(traj_lengths)
 
-        # Convert to TensorFlow tensors
-        self.states = tf.convert_to_tensor(dataset["states"][:total_num_steps], dtype=tf.float32)
-        self.actions = tf.convert_to_tensor(dataset["actions"][:total_num_steps], dtype=tf.float32)
+        # Keep as numpy arrays during preprocessing
+        self.states_np = dataset["states"][:total_num_steps].astype(np.float32)
+        self.actions_np = dataset["actions"][:total_num_steps].astype(np.float32)
         if self.use_img:
-            self.images = tf.convert_to_tensor(dataset["images"][:total_num_steps], dtype=tf.float32)
+            self.images_np = dataset["images"][:total_num_steps].astype(np.float32)
 
-        # Make indices
-        self.indices = self._make_indices(traj_lengths)
+        # Convert indices to numpy arrays and tensors
+        self.indices = np.array(self._make_indices(traj_lengths))
+        # Make sure to convert to int64 for Dataset.range()
+        self.starts = tf.constant(self.indices[:, 0], dtype=tf.int64)
+        self.num_before_starts = tf.constant(self.indices[:, 1], dtype=tf.int64)
+        # Pre-compute stacked states and images using numpy
+        log.info("Pre-computing stacked states...")
+        self.cached_states = self._precompute_stacked_states()
+        if self.use_img:
+            log.info("Pre-computing stacked images...")
+            self.cached_images = self._precompute_stacked_images()
 
+        # Convert to tensors after preprocessing
+        with tf.device(device):
+            self.states = tf.convert_to_tensor(self.states_np)
+            self.actions = tf.convert_to_tensor(self.actions_np)
+            self.cached_states = tf.convert_to_tensor(self.cached_states)
+            if self.use_img:
+                self.images = tf.convert_to_tensor(self.images_np)
+                self.cached_images = tf.convert_to_tensor(self.cached_images)
+
+        log.info(f"Loaded dataset from {dataset_path}")
+        log.info(f"Number of episodes: {min(max_n_episodes, len(traj_lengths))}")
+        log.info(f"States shape: {self.states.shape}")
+        log.info(f"Actions shape: {self.actions.shape}")
+        if self.use_img:
+            log.info(f"Images shape: {self.images.shape}")
     def _make_indices(self, traj_lengths):
+        """
+        Returns a list of tuples (start_idx, steps_from_start) for each valid sequence.
+        """
         indices = []
         cur_traj_index = 0
         for traj_length in traj_lengths:
             max_start = cur_traj_index + traj_length - self.horizon_steps
-            indices.extend([(i, i - cur_traj_index) for i in range(cur_traj_index, max_start + 1)])
+            # For each trajectory, generate all possible starting positions and their offset from trajectory start
+            for i in range(cur_traj_index, max_start + 1):
+                indices.append((i, i - cur_traj_index))
             cur_traj_index += traj_length
         return indices
+    def _precompute_stacked_states(self):
+        cached = np.zeros((len(self.indices), self.cond_steps, self.states_np.shape[-1]), dtype=np.float32)
+        for i, (start, num_before_start) in enumerate(tqdm(self.indices, desc="Caching states")):
+            states = self.states_np[(start - num_before_start):(start + 1)]
+            for t in range(self.cond_steps):
+                idx = max(num_before_start - t, 0)
+                cached[i, self.cond_steps-1-t] = states[idx]
+        return cached
 
-    def set_train_val_split(self, train_split):
-        """
-        Splits the dataset into training and validation sets.
+    def _precompute_stacked_images(self):
+        img_shape = self.images_np.shape[1:]  # (C, H, W) or (H, W, C)
+        cached = np.zeros((len(self.indices), self.img_cond_steps, *img_shape), dtype=np.float32)
+        for i, (start, num_before_start) in enumerate(tqdm(self.indices, desc="Caching images")):
+            images = self.images_np[(start - num_before_start):(start + 1)]
+            for t in range(self.img_cond_steps):
+                idx = max(num_before_start - t, 0)
+                cached[i, self.img_cond_steps-1-t] = images[idx]
+        return cached
 
-        Args:
-            train_split (float): The proportion of the dataset to include in the
-                training split (0.0 to 1.0).
+    @tf.function
+    def _get_item_from_index(self, index):
+        start = self.starts[index]
+        actions = self.actions[start : start + self.horizon_steps]
 
-        Returns:
-            val_indices (list): List of indices used for validation set
-        """
-        num_train = int(len(self.indices) * train_split)
-        train_indices = random.sample(self.indices, num_train)
-        val_indices = [i for i in self.indices if i not in train_indices]
-
-        # Update self.indices to only contain training indices
-        self.train_indices = train_indices
-        self.val_indices = val_indices
-
-        return val_indices
-    
-    def __len__(self):
-        return len(self.indices)
-
-    @tf.function(reduce_retracing=True)
-    def _get_item(self, start, num_before_start):
-        # print("start", start, type(start))
-        # print("num_before_start", num_before_start, type(num_before_start))
-        end = start + self.horizon_steps
-        
-        # Get states and actions
-        states = self.states[(start - num_before_start):(start + 1)]
-        actions = self.actions[start:end]
-
-        # Stack states
-        states_history = []
-        for t in range(self.cond_steps-1, -1, -1):
-            idx = tf.maximum(num_before_start - t, 0)
-            states_history.append(states[idx])
-        states = tf.stack(states_history)
-
-        conditions = {"state": states}
-
+        conditions = {
+            "state": self.cached_states[index],
+        }
         if self.use_img:
-            images = self.images[(start - num_before_start):end]
-            img_history = []
-            for t in range(self.img_cond_steps-1, -1, -1):
-                idx = tf.maximum(num_before_start - t, 0)
-                img_history.append(images[idx])
-            images = tf.stack(img_history)
-            conditions["rgb"] = images
-
+            conditions["rgb"] = self.cached_images[index]
         return actions, conditions
 
-    def as_tensorflow_dataset(self, batch_size=32, shuffle=True):
-        # Convert indices to tensors
-        indices = tf.constant(self.indices, dtype=tf.int32)
-        
-        # Create dataset from indices
-        dataset = tf.data.Dataset.from_tensor_slices(indices)
+    def as_tensorflow_dataset(self, batch_size=64, shuffle=True): # Increased batch size
+        dataset = tf.data.Dataset.from_tensor_slices(tf.range(len(self.indices), dtype=tf.int64))
 
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=1000)
+        # if shuffle:
+        #     dataset = dataset.shuffle(
+        #         buffer_size=min(len(self.indices), 10000),
+        #         reshuffle_each_iteration=True
+        #     )
 
-        # Map function to get items
-        def map_fn(idx):
-            return self._get_item(idx[0], idx[1])
-
-        # Apply mapping and batching
+        # Consider map_and_batch if you have preprocessing in _get_item_from_index
         dataset = dataset.map(
-            map_fn, 
-            num_parallel_calls=tf.data.AUTOTUNE
-        ).cache(
+            self._get_item_from_index,
+            num_parallel_calls=4,
+            deterministic=False
         ).batch(
             batch_size,
-            drop_remainder=True
-        ).prefetch(
-            tf.data.AUTOTUNE
+            drop_remainder=True,
+            num_parallel_calls=4
         )
 
         return dataset
-
+    
 class StitchedSequenceQLearningDataset(StitchedSequenceDataset):
     """
     Extends StitchedSequenceDataset to include rewards and dones for Q learning

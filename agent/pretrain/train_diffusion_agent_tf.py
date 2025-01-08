@@ -12,6 +12,9 @@ from agent.pretrain.train_agent_tf import PreTrainAgent  # The converted PreTrai
 import os
 
 os.environ['TF_XLA_FLAGS'] = '--tf_xla_cpu_global_jit'
+os.environ['TF_GPU_THREAD_MODE']='gpu_private'
+os.environ['TF_GPU_THREAD_COUNT']='1'
+
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +33,13 @@ class TrainDiffusionAgent(PreTrainAgent):
             cfg: Configuration parameters for training.
         """
         super().__init__(cfg)
+        # Add profiling-related configuration options
+        policy = tf.keras.mixed_precision.Policy('mixed_float16')
+        tf.keras.mixed_precision.set_global_policy(policy)
+        self.profile_enabled = cfg.get("profile_enabled", False)
+        self.profile_start_batch = cfg.get("profile_start_batch", 5)
+        self.profile_end_batch = cfg.get("profile_end_batch", 10)
+        self.profile_logdir = cfg.get("profile_logdir", "./profile_logs")
 
     @tf.function(reduce_retracing=True)
     def train_step(self, batch):
@@ -47,7 +57,7 @@ class TrainDiffusionAgent(PreTrainAgent):
         # print("Input batch type:", type(batch))
         # print("Input batch shape (if applicable):", [b.shape for b in batch if hasattr(b, 'shape')])
 
-        with tf.GradientTape() as tape:
+        with tf.GradientTape(persistent=False) as tape:
             loss = self.model.loss(*batch)
         gradients = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
@@ -57,10 +67,16 @@ class TrainDiffusionAgent(PreTrainAgent):
         """
         Runs the training loop for the diffusion agent.
         """
+        options = tf.data.Options()
+        options.experimental_optimization.parallel_batch = True
+        options.experimental_optimization.map_parallelization = True
+        self.dataloader_train = self.dataloader_train.with_options(options)
+        self.dataloader_train = self.dataloader_train.prefetch(tf.data.AUTOTUNE)
         timer = Timer()
         self.epoch = 1
         cnt_batch = 0
         log.info("Starting training")
+        # with tf.profiler.experimental.Profile(self.profile_logdir):
         for epoch in range(self.n_epochs):
             # Training
             train_loss_metric = tf.keras.metrics.Mean()
@@ -68,6 +84,12 @@ class TrainDiffusionAgent(PreTrainAgent):
             self.optimizer.learning_rate.assign(epoch_lr)
         
             for batch_train in tqdm(self.dataloader_train):
+                # if self.profile_enabled and self.profile_start_batch <= cnt_batch <= self.profile_end_batch:
+                #     # Start profiling
+                #     with tf.profiler.experimental.Trace('train', step_num=cnt_batch, _r=1):
+                #         loss_train = self.train_step(batch_train)
+                # else:
+                #     loss_train = self.train_step(batch_train)
                 loss_train = self.train_step(batch_train)
                 train_loss_metric.update_state(loss_train)
                 

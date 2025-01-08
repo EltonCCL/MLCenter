@@ -20,7 +20,6 @@ from model.diffusion.sampling_tf import (
     make_timesteps,
 )
 
-
 class DiffusionModel(tf.keras.Model):
     """
     Gaussian Diffusion Model with optional DDIM sampling for TensorFlow.
@@ -78,102 +77,168 @@ class DiffusionModel(tf.keras.Model):
         self.randn_clip_value = randn_clip_value
         self.eps_clip_value = eps_clip_value
 
+        # Initialize DDPM parameters *before* network building
         with tf.device(device):
+            self._initialize_ddpm_params()
             self.network = network
-            # Remove the explicit build call
-            dummy_input = tf.zeros((1, horizon_steps, action_dim))
-            dummy_time = tf.zeros((1,))  # Usually time is a scalar per batch
-            dummy_cond = {
-                "state": tf.zeros(
-                    (1, self.obs_dim)
-                )  # Adjust based on actual cond structure
-            }
 
-            if network_path is not None:
+        # Now proceed with network loading
+        if network_path is not None:
+            # Create dummy inputs for building the network
+            dummy_input = tf.zeros((1, horizon_steps, action_dim))
+            dummy_time = tf.zeros((1,))
+            dummy_cond = {"state": tf.zeros((1, self.obs_dim))}
+
+            # Call the network with dummy inputs to build it
+            with tf.device(device):
                 self.network(dummy_input, time=dummy_time, cond=dummy_cond)
 
-                checkpoint = tf.train.Checkpoint(model=self.network)
-                manager = tf.train.CheckpointManager(
-                    checkpoint, network_path, max_to_keep=5
+            checkpoint = tf.train.Checkpoint(model=self.network)
+            manager = tf.train.CheckpointManager(
+                checkpoint, network_path, max_to_keep=5
+            )
+            if manager.latest_checkpoint:
+                checkpoint.restore(manager.latest_checkpoint).expect_partial()
+                log.info(f"Loaded model from {manager.latest_checkpoint}")
+            else:
+                log.warning(f"No checkpoint found at {network_path}")
+
+
+    # @tf.function
+    def _initialize_ddpm_params(self):
+        """
+        Initialize DDPM parameters as a tf.function.
+        """
+        # DDPM parameters
+        self.betas = cosine_beta_schedule(self.denoising_steps)
+        self.alphas = 1.0 - self.betas
+        self.alphas_cumprod = tf.math.cumprod(self.alphas, axis=0)
+        self.alphas_cumprod_prev = tf.concat(
+            [tf.ones(1), self.alphas_cumprod[:-1]], axis=0
+        )
+        self.sqrt_alphas_cumprod = tf.sqrt(self.alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = tf.sqrt(1.0 - self.alphas_cumprod)
+        self.sqrt_recip_alphas_cumprod = tf.sqrt(1.0 / self.alphas_cumprod)
+        self.sqrt_recipm1_alphas_cumprod = tf.sqrt(1.0 / self.alphas_cumprod - 1)
+
+        self.ddpm_var = (
+            self.betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        )
+        self.ddpm_logvar_clipped = tf.math.log(
+            tf.clip_by_value(self.ddpm_var, 1e-20, float("inf"))
+        )
+
+        self.ddpm_mu_coef1 = (
+            self.betas * tf.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        )
+        self.ddpm_mu_coef2 = (
+            (1.0 - self.alphas_cumprod_prev)
+            * tf.sqrt(self.alphas)
+            / (1.0 - self.alphas_cumprod)
+        )
+
+        if self.use_ddim:
+            assert self.predict_epsilon, "DDIM requires predicting epsilon for now."
+            if self.ddim_discretize == "uniform":
+                step_ratio = self.denoising_steps // self.ddim_steps
+                self.ddim_t = tf.range(0, self.ddim_steps) * step_ratio
+            else:
+                raise ValueError("Unknown discretization method for DDIM.")
+
+            # Use TensorArray to store intermediate tensors
+            ddim_alphas_ta = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, clear_after_read=False
+            )
+            ddim_alphas_sqrt_ta = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, clear_after_read=False
+            )
+            ddim_alphas_prev_ta = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, clear_after_read=False
+            )
+            ddim_sqrt_one_minus_alphas_ta = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, clear_after_read=False
+            )
+            ddim_sigmas_ta = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, clear_after_read=False
+            )
+            ddim_t_ta = tf.TensorArray(
+                tf.float32, size=0, dynamic_size=True, clear_after_read=False
+            )
+
+            for i in tf.range(self.ddim_steps):
+                ddim_alphas_ta = ddim_alphas_ta.write(
+                    i, tf.gather(self.alphas_cumprod, tf.cast(self.ddim_t[i], tf.int32))
                 )
-                if manager.latest_checkpoint:
-                    # Build the network by calling the model with dummy cond
 
-                    checkpoint.restore(manager.latest_checkpoint).expect_partial()
-                    log.info(f"Loaded model from {manager.latest_checkpoint}")
-                else:
-                    log.warning(f"No checkpoint found at {network_path}")
-
-            # DDPM parameters
-            self.betas = cosine_beta_schedule(denoising_steps)
-            self.alphas = 1.0 - self.betas
-            self.alphas_cumprod = tf.math.cumprod(self.alphas, axis=0)
-            self.alphas_cumprod_prev = tf.concat(
-                [tf.ones(1), self.alphas_cumprod[:-1]], axis=0
-            )
-            self.sqrt_alphas_cumprod = tf.sqrt(self.alphas_cumprod)
-            self.sqrt_one_minus_alphas_cumprod = tf.sqrt(1.0 - self.alphas_cumprod)
-            self.sqrt_recip_alphas_cumprod = tf.sqrt(1.0 / self.alphas_cumprod)
-            self.sqrt_recipm1_alphas_cumprod = tf.sqrt(1.0 / self.alphas_cumprod - 1)
-
-            self.ddpm_var = (
-                self.betas
-                * (1.0 - self.alphas_cumprod_prev)
-                / (1.0 - self.alphas_cumprod)
-            )
-            self.ddpm_logvar_clipped = tf.math.log(
-                tf.clip_by_value(self.ddpm_var, 1e-20, float("inf"))
-            )
-
-            self.ddpm_mu_coef1 = (
-                self.betas
-                * tf.sqrt(self.alphas_cumprod_prev)
-                / (1.0 - self.alphas_cumprod)
-            )
-            self.ddpm_mu_coef2 = (
-                (1.0 - self.alphas_cumprod_prev)
-                * tf.sqrt(self.alphas)
-                / (1.0 - self.alphas_cumprod)
-            )
-
-            if use_ddim:
-                assert predict_epsilon, "DDIM requires predicting epsilon for now."
-                if ddim_discretize == "uniform":
-                    step_ratio = self.denoising_steps // ddim_steps
-                    self.ddim_t = tf.range(0, ddim_steps) * step_ratio
-                else:
-                    raise ValueError("Unknown discretization method for DDIM.")
-
-                self.ddim_alphas = tf.gather(self.alphas_cumprod, self.ddim_t)
-                self.ddim_alphas = tf.cast(self.ddim_alphas, tf.float32)
-                self.ddim_alphas_sqrt = tf.sqrt(self.ddim_alphas)
-
-                self.ddim_alphas_prev = tf.concat(
-                    [
-                        tf.ones((1,), dtype=tf.float32),
-                        tf.gather(self.alphas_cumprod, self.ddim_t[:-1]),
-                    ],
-                    axis=0,
-                )
-                self.ddim_sqrt_one_minus_alphas = tf.pow(1.0 - self.ddim_alphas, 0.5)
-
-                ddim_eta = 0
-                self.ddim_sigmas = ddim_eta * tf.pow(
-                    (1 - self.ddim_alphas_prev)
-                    / (1 - self.ddim_alphas)
-                    * (1 - self.ddim_alphas / self.ddim_alphas_prev),
-                    0.5,
+                ddim_alphas_sqrt_ta = ddim_alphas_sqrt_ta.write(
+                    i,
+                    tf.sqrt(
+                        tf.gather(self.alphas_cumprod, tf.cast(self.ddim_t[i], tf.int32))
+                    ),
                 )
 
-                # Flip all
-                self.ddim_t = tf.reverse(self.ddim_t, [0])
-                self.ddim_alphas = tf.reverse(self.ddim_alphas, [0])
-                self.ddim_alphas_sqrt = tf.reverse(self.ddim_alphas_sqrt, [0])
-                self.ddim_alphas_prev = tf.reverse(self.ddim_alphas_prev, [0])
-                self.ddim_sqrt_one_minus_alphas = tf.reverse(
-                    self.ddim_sqrt_one_minus_alphas, [0]
+                ddim_sqrt_one_minus_alphas_ta = ddim_sqrt_one_minus_alphas_ta.write(
+                    i,
+                    tf.pow(
+                        1.0
+                        - tf.gather(
+                            self.alphas_cumprod, tf.cast(self.ddim_t[i], tf.int32)
+                        ),
+                        0.5,
+                    ),
                 )
-                self.ddim_sigmas = tf.reverse(self.ddim_sigmas, [0])
+                ddim_t_ta = ddim_t_ta.write(i, self.ddim_t[i])
+
+            ddim_alphas_prev_ta = ddim_alphas_prev_ta.write(0, 1.0)
+            for i in tf.range(1, self.ddim_steps):
+                ddim_alphas_prev_ta = ddim_alphas_prev_ta.write(
+                    i, tf.gather(self.alphas_cumprod, tf.cast(self.ddim_t[i - 1], tf.int32))
+                )
+
+            ddim_eta = 0
+            for i in tf.range(self.ddim_steps):
+                ddim_sigmas_ta = ddim_sigmas_ta.write(
+                    i,
+                    ddim_eta
+                    * tf.pow(
+                        (
+                            1
+                            - tf.gather(
+                                self.alphas_cumprod, tf.cast(self.ddim_t[i] - 1, tf.int32)
+                            )
+                        )
+                        / (
+                            1
+                            - tf.gather(
+                                self.alphas_cumprod, tf.cast(self.ddim_t[i], tf.int32)
+                            )
+                        )
+                        * (
+                            1
+                            - tf.gather(
+                                self.alphas_cumprod, tf.cast(self.ddim_t[i], tf.int32)
+                            )
+                            / tf.gather(
+                                self.alphas_cumprod, tf.cast(self.ddim_t[i] - 1, tf.int32)
+                            )
+                        ),
+                        0.5,
+                    ),
+                )
+
+            # Flip all
+            reverse_indices = tf.range(self.ddim_steps - 1, -1, -1)
+
+            self.ddim_t = tf.cast(
+                tf.gather(ddim_t_ta.stack(), reverse_indices), tf.int32
+            )
+            self.ddim_alphas = tf.gather(ddim_alphas_ta.stack(), reverse_indices)
+            self.ddim_alphas_sqrt = tf.gather(ddim_alphas_sqrt_ta.stack(), reverse_indices)
+            self.ddim_alphas_prev = tf.gather(ddim_alphas_prev_ta.stack(), reverse_indices)
+            self.ddim_sqrt_one_minus_alphas = tf.gather(
+                ddim_sqrt_one_minus_alphas_ta.stack(), reverse_indices
+            )
+            self.ddim_sigmas = tf.gather(ddim_sigmas_ta.stack(), reverse_indices)
 
     def get_config(self):
         """
@@ -230,6 +295,7 @@ class DiffusionModel(tf.keras.Model):
             config["some_list_param"] = ListConfig(config["some_list_param"])
         return cls(**config)
 
+    @tf.function
     def p_mean_var(self, x, t, cond, index=None, network_override=None):
         """
         Compute the mean and variance for the denoising step.
@@ -289,6 +355,7 @@ class DiffusionModel(tf.keras.Model):
 
         return mu, logvar
 
+    @tf.function
     def call(self, cond, deterministic=True, fixed_noise=None):
         """
         Forward pass for sampling actions.
@@ -308,23 +375,34 @@ class DiffusionModel(tf.keras.Model):
             x = fixed_noise
         else:
             x = tf.random.normal([B, self.horizon_steps, self.action_dim])
+
         if self.use_ddim:
             t_all = self.ddim_t
         else:
             t_all = tf.range(self.denoising_steps - 1, -1, -1)
-        for i, t in enumerate(t_all):
+
+        # Use tf.while_loop instead of Python for loop
+        i = tf.constant(0, dtype=tf.int32)
+        x_shape = tf.shape(x)
+
+        def cond_fun(i, x):
+            return i < tf.shape(t_all)[0]
+
+        def body_fun(i, x):
+            t = t_all[i]
             t_b = make_timesteps(B, t, self.betas.device)
             index_b = make_timesteps(B, i, self.betas.device)
+
             mean, logvar = self.p_mean_var(x=x, t=t_b, cond=cond, index=index_b)
             std = tf.exp(0.5 * logvar)
 
             if self.use_ddim:
                 std = tf.zeros_like(std)
             else:
-                if t == 0:
-                    std = tf.zeros_like(std)
-                else:
-                    std = tf.clip_by_value(std, 1e-3, float("inf"))
+                # Use boolean masking for t == 0 condition
+                mask = tf.cast(tf.not_equal(t, 0), tf.float32)
+                std = std * mask + (1.0 - mask) * tf.zeros_like(std) # when t==0, std = 0
+                std = tf.clip_by_value(std, 1e-3, float("inf"))
 
             if fixed_noise is not None:
                 noise = tf.clip_by_value(
@@ -332,19 +410,28 @@ class DiffusionModel(tf.keras.Model):
                 )
             else:
                 noise = tf.clip_by_value(
-                    tf.random.normal(tf.shape(x)),
+                    tf.random.normal(x_shape),
                     -self.randn_clip_value,
                     self.randn_clip_value,
                 )
             x = mean + std * noise
 
-            if self.final_action_clip_value is not None and i == len(t_all) - 1:
-                x = tf.clip_by_value(
-                    x, -self.final_action_clip_value, self.final_action_clip_value
+            if self.final_action_clip_value is not None:
+                x = tf.where(
+                    tf.equal(i, tf.shape(t_all)[0] - 1),
+                    tf.clip_by_value(
+                        x, -self.final_action_clip_value, self.final_action_clip_value
+                    ),
+                    x,
                 )
+
+            return i + 1, x
+
+        _, x = tf.while_loop(cond_fun, body_fun, loop_vars=[i, x])
 
         return Sample(x, None)
 
+    @tf.function
     def loss(self, x, *args):
         """
         Compute the loss for training.
@@ -360,6 +447,7 @@ class DiffusionModel(tf.keras.Model):
         t = tf.random.uniform([batch_size], 0, self.denoising_steps, dtype=tf.int32)
         return self.p_losses(x, *args, t)
 
+    @tf.function
     def p_losses(self, x_start, cond, t):
         """
         Compute the denoising loss.
@@ -381,6 +469,7 @@ class DiffusionModel(tf.keras.Model):
         else:
             return tf.reduce_mean(tf.square(x_recon - x_start))
 
+    @tf.function
     def q_sample(self, x_start, t, noise=None):
         """
         Sample from the forward diffusion process.
