@@ -3,6 +3,8 @@ Module for training PPO Diffusion agents using TensorFlow.
 """
 
 import os
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_cpu_global_jit'
+
 import pickle
 import einops
 import numpy as np
@@ -10,6 +12,7 @@ import tensorflow as tf
 import logging
 import wandb
 import math
+from tqdm import tqdm
 
 log = logging.getLogger(__name__)
 from util.timer import Timer  # Implement or adapt for TensorFlow compatibility
@@ -53,7 +56,111 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 learning_rate=cfg.train.eta_lr,
                 weight_decay=cfg.train.eta_weight_decay,
             )
+    # @tf.function
+    def train_step(
+        self,
+        inds_b,
+        obs_state,
+        chains_k,
+        logprobs_k,
+        returns_k,
+        values_k,
+        advantages_k,
+    ):
+        tf.print(type(inds_b), type(obs_state), type(chains_k), type(logprobs_k), type(returns_k), type(values_k), type(advantages_k))
+        exit()
+        # Unravel indices for batching
+        batch_inds_b, denoising_inds_b = tf.unravel_index(
+            inds_b, (self.n_steps * self.n_envs, self.model.ft_denoising_steps)
+        )
 
+        # Gather observations for the current batch
+        obs_b = {"state": tf.gather(obs_state, batch_inds_b)}
+
+        # Use advanced indexing to gather chains
+        indices = tf.stack([batch_inds_b, denoising_inds_b], axis=1)
+        chains_prev_b = tf.gather_nd(chains_k, indices)
+
+        indices_next = tf.stack([batch_inds_b, denoising_inds_b + 1], axis=1)
+        chains_next_b = tf.gather_nd(chains_k, indices_next)
+
+        # Gather additional required tensors
+        returns_b = tf.gather(returns_k, batch_inds_b)
+        values_b = tf.gather(values_k, batch_inds_b)
+        advantages_b = tf.gather(advantages_k, batch_inds_b)
+
+        # Gather log probabilities with both indices
+        logprobs_b = tf.gather_nd(logprobs_k, indices)
+
+        with tf.GradientTape() as tape:
+            # Compute losses
+            (
+                pg_loss,
+                entropy_loss,
+                v_loss,
+                clipfrac,
+                approx_kl,
+                ratio,
+                bc_loss,
+                eta,
+            ) = self.model.loss(
+                obs_b,
+                chains_prev_b,
+                chains_next_b,
+                denoising_inds_b,
+                returns_b,
+                values_b,
+                advantages_b,
+                logprobs_b,
+                use_bc_loss=self.use_bc_loss,
+                reward_horizon=self.reward_horizon,
+            )
+            # Total loss calculation
+            loss = (
+                pg_loss
+                + entropy_loss * self.ent_coef
+                + v_loss * self.vf_coef
+                + bc_loss * self.bc_loss_coeff
+            )
+
+        # Calculate gradients
+        actor_grads = tape.gradient(loss, self.model.actor.trainable_variables)
+        critic_grads = tape.gradient(loss, self.model.critic.trainable_variables)
+
+        if self.learn_eta:
+            eta_grads = tape.gradient(loss, self.model.eta)
+
+        if self.max_grad_norm is not None:
+            actor_grads, actor_norm = tf.clip_by_global_norm(actor_grads, self.max_grad_norm)
+            critic_grads, critic_norm = tf.clip_by_global_norm(critic_grads, self.max_grad_norm)
+            if self.learn_eta:
+                eta_grads, eta_norm = tf.clip_by_global_norm(eta_grads, self.max_grad_norm)
+
+        # Apply gradients using tf.cond for conditional updates
+        def apply_actor_eta_grads():
+            self.actor_optimizer.apply_gradients(
+                zip(actor_grads, self.model.actor.trainable_variables)
+            )
+            if self.learn_eta:
+                self.eta_optimizer.apply_gradients(
+                    zip(eta_grads, self.model.eta.trainable_variables)
+                )
+
+        def apply_critic_grads():
+            self.critic_optimizer.apply_gradients(
+                zip(critic_grads, self.model.critic.trainable_variables)
+            )
+
+        tf.cond(
+            self.itr >= self.n_critic_warmup_itr,
+            true_fn=apply_actor_eta_grads,
+            false_fn=tf.no_op,  # Do nothing if condition is false
+        )
+
+        apply_critic_grads()
+
+        return loss, pg_loss, entropy_loss, v_loss, bc_loss, eta, approx_kl, clipfrac, ratio
+    
     def run(self):
         """
         Execute the training loop for the PPO Diffusion agent.
@@ -110,18 +217,18 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     (obs_full_trajs, prev_obs_venv["state"][:, -1][None])
                 )
 
+            prev_obs_tensor = tf.convert_to_tensor(prev_obs_venv["state"], dtype=tf.float32)
             # Collect trajectories from environments
-            for step in range(self.n_steps):
-                if step % 10 == 0:
-                    print(f"Processed step {step} of {self.n_steps}")
+            # with tf.device('/GPU:0'):
+            for step in tqdm(range(self.n_steps)):
+                # if step % 10 == 0:
+                #     print(f"Processed step {step} of {self.n_steps}")
 
                 # Select action based on current observations
                 # if not eval_mode:
                 #     tf.keras.backend.clear_session()  # Optional: clear session if needed
                 cond = {
-                    "state": tf.convert_to_tensor(
-                        prev_obs_venv["state"], dtype=tf.float32
-                    )
+                    "state": prev_obs_tensor
                 }
                 samples = self.model(
                     cond=cond,
@@ -129,11 +236,12 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     return_chain=True,
                     training=not eval_mode,  # Indicate training mode
                 )
+
                 output_venv = (
-                    samples.trajectories.numpy()
+                    samples.trajectories
                 )  # Convert TensorFlow tensor to numpy
-                chains_venv = samples.chains.numpy()
-                action_venv = output_venv[:, : self.act_steps]
+                chains_venv = samples.chains
+                action_venv = output_venv[:, : self.act_steps].numpy()
 
                 # Apply selected actions to the environments
                 (
@@ -144,6 +252,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     info_venv,
                 ) = self.venv.step(action_venv)
                 done_venv = terminated_venv | truncated_venv
+
                 if self.save_full_observations:
                     obs_full_venv = np.array(
                         [info["full_obs"]["state"] for info in info_venv]
@@ -163,7 +272,10 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 # Increment training step counter
                 if not eval_mode:
                     cnt_train_step += self.n_envs * self.act_steps
+                
+                prev_obs_tensor = tf.convert_to_tensor(obs_venv["state"], dtype=tf.float32)
 
+            
             # Summarize episode rewards
             episodes_start_end = []
             for env_ind in range(self.n_envs):
@@ -318,92 +430,41 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     # Shuffle the data indices for this epoch
                     inds_k = tf.random.shuffle(tf.range(total_steps))
                     num_batch = max(1, total_steps // self.batch_size)
-                    for batch in range(num_batch):
+                    for batch in tqdm(range(num_batch)):
                         start = batch * self.batch_size
                         end = start + self.batch_size
                         inds_b = inds_k[start:end]
 
-                        # Unravel indices for batching
-                        batch_inds_b, denoising_inds_b = tf.unravel_index(
+                        # Call the tf.function-decorated train_step
+                        (
+                            loss,
+                            pg_loss,
+                            entropy_loss,
+                            v_loss,
+                            bc_loss,
+                            eta,
+                            approx_kl,
+                            clipfrac,
+                            ratio,
+                        ) = self.train_step(
                             inds_b,
-                            (self.n_steps * self.n_envs, self.model.ft_denoising_steps),
+                            obs_k["state"],
+                            chains_k,
+                            logprobs_k,
+                            returns_k,
+                            values_k,
+                            advantages_k,
                         )
+                        clipfracs += [clipfrac]
 
-                        # Gather observations for the current batch
-                        obs_b = {"state": tf.gather(obs_k["state"], batch_inds_b)}
-
-                        # Use advanced indexing to gather chains
-                        indices = tf.stack([batch_inds_b, denoising_inds_b], axis=1)
-                        chains_prev_b = tf.gather_nd(chains_k, indices)
-
-                        indices_next = tf.stack(
-                            [batch_inds_b, denoising_inds_b + 1], axis=1
-                        )
-                        chains_next_b = tf.gather_nd(chains_k, indices_next)
-
-                        # Gather additional required tensors
-                        returns_b = tf.gather(returns_k, batch_inds_b)
-                        values_b = tf.gather(values_k, batch_inds_b)
-                        advantages_b = tf.gather(advantages_k, batch_inds_b)
-
-                        # Gather log probabilities with both indices
-                        logprobs_b = tf.gather_nd(logprobs_k, indices)
-
-                        with tf.GradientTape() as tape:
-                            # Compute losses
-                            (
-                                pg_loss,
-                                entropy_loss,
-                                v_loss,
-                                clipfrac,
-                                approx_kl,
-                                ratio,
-                                bc_loss,
-                                eta,
-                            ) = self.model.loss(
-                                obs_b,
-                                chains_prev_b,
-                                chains_next_b,
-                                denoising_inds_b,
-                                returns_b,
-                                values_b,
-                                advantages_b,
-                                logprobs_b,
-                                use_bc_loss=self.use_bc_loss,
-                                reward_horizon=self.reward_horizon,
+                        # Logging (ideally, you should move this outside of the tf.function for better performance)
+                        # But only log when necessary to avoid slowing down the training
+                        if self.itr % self.log_freq == 0:
+                            log.info(
+                                f"approx_kl: {approx_kl.numpy()}, update_epoch: {update_epoch}, num_batch: {batch}"
                             )
 
-                            # Total loss calculation
-                            loss = (
-                                pg_loss
-                                + entropy_loss * self.ent_coef
-                                + v_loss * self.vf_coef
-                                + bc_loss * self.bc_loss_coeff
-                            )
-                            clipfracs += [clipfrac]
-
-                        # Calculate gradients
-                        actor_grads = tape.gradient(loss, self.model.actor.trainable_variables)
-                        critic_grads = tape.gradient(loss, self.model.critic.trainable_variables)
-                        if self.learn_eta:
-                            eta_grads = tape.gradient(loss, self.model.eta)
-
-                        if self.itr >= self.n_critic_warmup_itr:
-                            # Optional gradient clipping
-                            if self.max_grad_norm is not None:
-                                pass
-                            # Apply actor gradients
-                            self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
-                            if self.learn_eta and batch % self.eta_update_interval == 0:
-                                self.eta_optimizer.apply_gradients(zip(eta_grads, self.model.eta.trainable_variables))
-                        # Always update critic
-                        self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
-
-                        log.info(
-                            f"approx_kl: {approx_kl.numpy()}, update_epoch: {update_epoch}, num_batch: {batch}"
-                        )
-
-                        # Early stopping if KL divergence exceeds target
+                        # Early stopping based on KL divergence (also better outside tf.function, if possible)
                         if self.target_kl is not None and approx_kl > self.target_kl:
                             break
 
