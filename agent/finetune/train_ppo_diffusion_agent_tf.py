@@ -16,7 +16,6 @@ from util.timer import Timer  # Implement or adapt for TensorFlow compatibility
 from agent.finetune.train_ppo_agent_tf import TrainPPOAgent  # Updated base class
 from util.scheduler_tf import CosineAnnealingWarmupRestarts  # TensorFlow scheduler
 
-
 class TrainPPODiffusionAgent(TrainPPOAgent):
     """
     Trainer for PPO Diffusion Agents.
@@ -40,7 +39,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
         # Eta parameter between DDIM and DDPM
         self.learn_eta = self.model.learn_eta
         if self.learn_eta:
-
             self.eta_update_interval = cfg.train.eta_update_interval
             self.eta_lr_scheduler = CosineAnnealingWarmupRestarts(
                 initial_learning_rate=cfg.train.eta_lr,
@@ -118,8 +116,8 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     print(f"Processed step {step} of {self.n_steps}")
 
                 # Select action based on current observations
-                if not eval_mode:
-                    tf.keras.backend.clear_session()  # Optional: clear session if needed
+                # if not eval_mode:
+                #     tf.keras.backend.clear_session()  # Optional: clear session if needed
                 cond = {
                     "state": tf.convert_to_tensor(
                         prev_obs_venv["state"], dtype=tf.float32
@@ -224,10 +222,14 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 )
                 total_size = obs_k.shape[0]
                 num_splits = math.ceil(total_size / self.logprob_batch_size)
+                # Ensure that tf.split is used correctly
+                # Correctly handle cases where total_size is not divisible by self.logprob_batch_size
                 size_splits = [self.logprob_batch_size] * (num_splits - 1)
-                size_splits.append(
-                    total_size - self.logprob_batch_size * (num_splits - 1)
-                )
+                remaining = total_size % self.logprob_batch_size
+                if remaining > 0:
+                    size_splits.append(remaining)
+                else:
+                    size_splits.append(self.logprob_batch_size)
 
                 obs_ts_k = tf.split(obs_k, size_splits, axis=0)
                 for i, obs_t in enumerate(obs_ts_k):
@@ -380,31 +382,22 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                             )
                             clipfracs += [clipfrac]
 
-                        # Compute gradients for trainable variables
-                        gradients = tape.gradient(loss, self.model.trainable_variables)
-                        # Apply gradient clipping if specified
-                        if self.max_grad_norm is not None:
-                            gradients, _ = tf.clip_by_global_norm(
-                                gradients, self.max_grad_norm
-                            )
-                        # Apply gradients to actor and critic optimizers
-                        self.actor_optimizer.apply_gradients(
-                            zip(gradients, self.model.trainable_variables)
-                        )
-                        self.critic_optimizer.apply_gradients(
-                            zip(gradients, self.model.trainable_variables)
-                        )
-                        if self.learn_eta and batch % self.eta_update_interval == 0:
-                            eta_gradients = tape.gradient(
-                                loss, self.model.eta_variables
-                            )
-                            if eta_gradients:
-                                eta_gradients, _ = tf.clip_by_global_norm(
-                                    eta_gradients, self.max_grad_norm
-                                )
-                                self.eta_optimizer.apply_gradients(
-                                    zip(eta_gradients, self.model.eta_variables)
-                                )
+                        # Calculate gradients
+                        actor_grads = tape.gradient(loss, self.model.actor.trainable_variables)
+                        critic_grads = tape.gradient(loss, self.model.critic.trainable_variables)
+                        if self.learn_eta:
+                            eta_grads = tape.gradient(loss, self.model.eta)
+
+                        if self.itr >= self.n_critic_warmup_itr:
+                            # Optional gradient clipping
+                            if self.max_grad_norm is not None:
+                                pass
+                            # Apply actor gradients
+                            self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
+                            if self.learn_eta and batch % self.eta_update_interval == 0:
+                                self.eta_optimizer.apply_gradients(zip(eta_grads, self.model.eta.trainable_variables))
+                        # Always update critic
+                        self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
 
                         log.info(
                             f"approx_kl: {approx_kl.numpy()}, update_epoch: {update_epoch}, num_batch: {batch}"
@@ -435,6 +428,22 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     itr=self.itr,
                 )
 
+            # Update learning rate
+            if self.itr >= self.n_critic_warmup_itr:
+                # Pass the current step to the learning rate scheduler
+                itr = max(self.itr - self.n_critic_warmup_itr, 0)
+                actor_lr = self.actor_lr_scheduler(itr)
+                # Update learning rate of optimizers
+                self.actor_optimizer.learning_rate.assign(actor_lr)
+                if self.learn_eta:
+                    # self.eta_lr_scheduler.step()
+                    eta_lr = self.eta_lr_scheduler(itr)
+                    self.eta_optimizer.learning_rate.assign(eta_lr)
+
+            critic_lr = self.critic_lr_scheduler(self.itr)
+            self.critic_optimizer.learning_rate.assign(critic_lr)
+
+            self.model.step()
             diffusion_min_sampling_std = self.model.get_min_sampling_denoising_std()
 
             # Save the model at specified intervals
