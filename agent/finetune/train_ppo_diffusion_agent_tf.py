@@ -33,7 +33,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
             cfg (dict): Configuration dictionary containing training parameters.
         """
         super().__init__(cfg)
-        self.n_cond_step = cfg.cond_steps  # Ensure cond_steps is correctly set
 
         # Reward horizon configuration
         self.reward_horizon = cfg.get("reward_horizon", self.act_steps)
@@ -41,6 +40,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
         # Eta parameter between DDIM and DDPM
         self.learn_eta = self.model.learn_eta
         if self.learn_eta:
+
             self.eta_update_interval = cfg.train.eta_update_interval
             self.eta_lr_scheduler = CosineAnnealingWarmupRestarts(
                 initial_learning_rate=cfg.train.eta_lr,
@@ -50,10 +50,9 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 min_lr=cfg.train.eta_lr_scheduler.min_lr,
                 warmup_steps=cfg.train.eta_lr_scheduler.warmup_steps,
                 gamma=1.0,
-                n_critic_warmup_itr=self.n_critic_warmup_itr,
             )
             self.eta_optimizer = tf.keras.optimizers.Adam(
-                learning_rate=self.eta_lr_scheduler,
+                learning_rate=cfg.train.eta_lr,
                 weight_decay=cfg.train.eta_weight_decay,
             )
 
