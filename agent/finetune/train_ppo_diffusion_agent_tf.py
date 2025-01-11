@@ -47,6 +47,10 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
         self.learn_eta = self.model.learn_eta
         if self.learn_eta:
             self.eta_update_interval = cfg.train.eta_update_interval
+            self.eta_optimizer = tf.keras.optimizers.Adam(
+                learning_rate=cfg.train.eta_lr,
+                weight_decay=cfg.train.eta_weight_decay,
+            )
             self.eta_lr_scheduler = CosineAnnealingWarmupRestarts(
                 initial_learning_rate=cfg.train.eta_lr,
                 first_cycle_steps=cfg.train.eta_lr_scheduler.first_cycle_steps,
@@ -55,10 +59,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 min_lr=cfg.train.eta_lr_scheduler.min_lr,
                 warmup_steps=cfg.train.eta_lr_scheduler.warmup_steps,
                 gamma=1.0,
-            )
-            self.eta_optimizer = tf.keras.optimizers.Adam(
-                learning_rate=cfg.train.eta_lr,
-                weight_decay=cfg.train.eta_weight_decay,
             )
 
     @tf.function
@@ -160,30 +160,6 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
         )
         return loss, pg_loss, entropy_loss, v_loss, bc_loss, eta, approx_kl, clipfrac, ratio
 
-    def log_metrics(self, approx_kl, update_epoch, batch, clipfracs, explained_var, loss, pg_loss, v_loss, bc_loss, eta):
-        """Logs training metrics, ideally outside of tf.function for performance."""
-        if self.itr % self.log_freq == 0:
-            log.info(
-                f"approx_kl: {approx_kl.numpy()}, update_epoch: {update_epoch}, num_batch: {batch}"
-            )
-            log.info(
-                f"{self.itr}: loss {loss.numpy():8.4f} | pg loss {pg_loss.numpy():8.4f} | value loss {v_loss.numpy():8.4f} | bc loss {bc_loss.numpy():8.4f} | eta {eta.numpy():8.4f}"
-            )
-
-        if self.use_wandb:
-            wandb.log(
-                {
-                    "approx kl": approx_kl.numpy(),
-                    "clipfrac": np.mean(clipfracs),
-                    "explained variance": explained_var,
-                    "loss": loss.numpy(),
-                    "pg loss": pg_loss.numpy(),
-                    "value loss": v_loss.numpy(),
-                    "bc loss": bc_loss.numpy(),
-                    "eta": eta.numpy(),
-                },
-                step=self.itr
-            )
 
     def run(self):
         """
@@ -244,9 +220,9 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
             prev_obs_tensor = tf.convert_to_tensor(prev_obs_venv["state"], dtype=tf.float32)
             # Collect trajectories from environments
             with tf.device('/GPU:0'):
-                for step in tqdm(range(self.n_steps)):
-                    # if step % 10 == 0:
-                    #     print(f"Processed step {step} of {self.n_steps}")
+                for step in range(self.n_steps):
+                    if step % 10 == 0:
+                        print(f"Processed step {step} of {self.n_steps}")
 
                     # Select action based on current observations
                     # if not eval_mode:
@@ -454,6 +430,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
 
                 # Begin update epochs
                 for update_epoch in range(self.update_epochs):
+                    flag_break = False
                     inds_k = tf.random.shuffle(tf.range(total_steps))
                     num_batch = max(1, total_steps // self.batch_size)
                     for batch in range(num_batch):
@@ -479,10 +456,19 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                         var_y = np.var(y_true)
                         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-                        self.log_metrics(approx_kl, update_epoch, batch, clipfracs, explained_var, loss, pg_loss, v_loss, bc_loss, eta)
-
+                        # self.log_metrics(approx_kl, update_epoch, batch, clipfracs, explained_var, loss, pg_loss, v_loss, bc_loss, eta)
+                        log.info(
+                            f"approx_kl: {approx_kl}, update_epoch: {update_epoch}, num_batch: {num_batch}"
+                        )
                         if self.target_kl is not None and approx_kl > self.target_kl:
+                            flag_break = True
                             break
+                    if flag_break:
+                        break
+                
+                y_pred, y_true = values_k.numpy(), returns_k.numpy()
+                var_y = np.var(y_true)
+                explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
             # Plot state trajectories if required
             if (
@@ -555,10 +541,21 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     run_results[-1]["eval_episode_reward"] = avg_episode_reward
                     run_results[-1]["eval_best_reward"] = avg_best_reward
                 else:
+                    log.info(
+                        f"{self.itr}: step {cnt_train_step:8d} | loss {loss:8.4f} | pg loss {pg_loss:8.4f} | value loss {v_loss:8.4f} | bc loss {bc_loss:8.4f} | reward {avg_episode_reward:8.4f} | eta {eta:8.4f} | t:{time:8.4f}"
+                    )
                     if self.use_wandb:
                         wandb.log(
                             {
-                                "total env step": cnt_train_step,
+                                "loss": loss,
+                                "pg loss": pg_loss,
+                                "value loss": v_loss,
+                                "bc loss": bc_loss,
+                                "eta": eta,
+                                "approx kl": approx_kl,
+                                "ratio": ratio,
+                                "clipfrac": np.mean(clipfracs),
+                                "explained variance": explained_var,
                                 "avg episode reward - train": avg_episode_reward,
                                 "num episode - train": num_episode_finished,
                                 "diffusion - min sampling std": diffusion_min_sampling_std,
