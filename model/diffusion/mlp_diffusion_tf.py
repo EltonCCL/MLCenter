@@ -84,7 +84,7 @@ class DiffusionMLP(keras.Model):
         )
         self.time_dim = time_dim
 
-    def call(self, x, time, cond, training=False, **kwargs):
+    def call(self, x, time, cond, training=True, **kwargs):
         """Forward pass for DiffusionMLP.
 
         Args:

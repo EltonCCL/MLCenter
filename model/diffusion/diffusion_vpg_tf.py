@@ -144,54 +144,16 @@ class VPGDiffusion(DiffusionModel):
         self.critic.trainable = True
 
         if network_path is not None:
-            # Create a checkpoint object that includes the model and ema_model
-            checkpoint = tf.train.Checkpoint(
-                epoch=tf.Variable(0),  # Add epoch to the checkpoint
-                model=self.actor,  # Assuming self.actor is your main model
-                ema_model=self.actor_ft, # Restore ema_model's weights to actor_ft
-                optimizer=tf.keras.optimizers.AdamW(
-                    1e-4
-                ),  # Need a dummy optimizer here as well
-            )
+            # Load the checkpoint directly
+            checkpoint = tf.train.load_checkpoint(network_path)
+            
+            # Check if 'ema' exists in the checkpoint
+            checkpoint_vars = checkpoint.get_variable_to_shape_map()
+            has_ema = any('ema' in var_name for var_name in checkpoint_vars)
 
-            # Restore from the checkpoint
-            manager = tf.train.CheckpointManager(
-                checkpoint, network_path, max_to_keep=5
-            )
-            checkpoint_path = manager.latest_checkpoint
-
-            if checkpoint_path is not None:
-                # List all variables in the checkpoint
-                variables = tf.train.list_variables(checkpoint_path)
-
-                # Check for ema_model
-                has_ema = False
-                for var_name, _ in variables:
-                    if "ema_model" in var_name:
-                        has_ema = True
-
-                if has_ema:
-                    # Restore from the checkpoint
-                    checkpoint.restore(checkpoint_path).expect_partial()
-                    logging.info(
-                        f"Loaded checkpoint from {checkpoint_path}"
-                    )
-
-                    logging.info("Assigned EMA weights to actor_ft")
-                else:
-                    logging.info(
-                        f"Checkpoint does not contain ema_model. Loading only the main model from {checkpoint_path}"
-                    )
-                    # Restore only the main model
-                    checkpoint = tf.train.Checkpoint(
-                        model=self.actor
-                    )
-                    checkpoint.restore(checkpoint_path).expect_partial()
-
-            else:
-                logging.warning(
-                    "No checkpoint found. Starting from scratch."
-                )
+            if not has_ema:  # load trained RL model
+                self.load_weights(network_path)
+                logging.info(f"Loaded model from {network_path}")
 
         log.info("---------- INIT VPGDiffusion OK ----------")
 
