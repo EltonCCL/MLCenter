@@ -1,14 +1,18 @@
+
 """
 Module for training PPO Diffusion agents using TensorFlow.
 """
 
 import os
-os.environ['TF_XLA_FLAGS'] = '--tf_xla_cpu_global_jit'
+# os.environ['TF_XLA_FLAGS'] = '--tf_xla_cpu_global_jit'
 
 import pickle
 import einops
 import numpy as np
 import tensorflow as tf
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
 import logging
 import wandb
 import math
@@ -56,44 +60,46 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 learning_rate=cfg.train.eta_lr,
                 weight_decay=cfg.train.eta_weight_decay,
             )
-    # @tf.function
-    def train_step(
-        self,
-        inds_b,
-        obs_state,
-        chains_k,
-        logprobs_k,
-        returns_k,
-        values_k,
-        advantages_k,
-    ):
-        tf.print(type(inds_b), type(obs_state), type(chains_k), type(logprobs_k), type(returns_k), type(values_k), type(advantages_k))
-        exit()
-        # Unravel indices for batching
-        batch_inds_b, denoising_inds_b = tf.unravel_index(
+
+    @tf.function
+    def gather_and_process_data(self, inds_b, obs_state, chains_k, logprobs_k, returns_k, values_k, advantages_k):
+        """
+        Gathers and processes data for a batch of indices (optimized for GPU).
+        """
+        unraveled_indices = tf.unravel_index(
             inds_b, (self.n_steps * self.n_envs, self.model.ft_denoising_steps)
         )
+        batch_inds_b = unraveled_indices[0]
+        denoising_inds_b = unraveled_indices[1]
 
-        # Gather observations for the current batch
         obs_b = {"state": tf.gather(obs_state, batch_inds_b)}
 
-        # Use advanced indexing to gather chains
         indices = tf.stack([batch_inds_b, denoising_inds_b], axis=1)
         chains_prev_b = tf.gather_nd(chains_k, indices)
 
         indices_next = tf.stack([batch_inds_b, denoising_inds_b + 1], axis=1)
         chains_next_b = tf.gather_nd(chains_k, indices_next)
 
-        # Gather additional required tensors
         returns_b = tf.gather(returns_k, batch_inds_b)
         values_b = tf.gather(values_k, batch_inds_b)
         advantages_b = tf.gather(advantages_k, batch_inds_b)
-
-        # Gather log probabilities with both indices
         logprobs_b = tf.gather_nd(logprobs_k, indices)
 
+        return obs_b, chains_prev_b, chains_next_b, denoising_inds_b, returns_b, values_b, advantages_b, logprobs_b
+
+    @tf.function(reduce_retracing=True)
+    def train_step(
+        self,
+        obs_b,
+        chains_prev_b,
+        chains_next_b,
+        denoising_inds_b,
+        returns_b,
+        values_b,
+        advantages_b,
+        logprobs_b,
+    ):
         with tf.GradientTape() as tape:
-            # Compute losses
             (
                 pg_loss,
                 entropy_loss,
@@ -115,52 +121,70 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 use_bc_loss=self.use_bc_loss,
                 reward_horizon=self.reward_horizon,
             )
-            # Total loss calculation
             loss = (
                 pg_loss
                 + entropy_loss * self.ent_coef
                 + v_loss * self.vf_coef
                 + bc_loss * self.bc_loss_coeff
             )
-
-        # Calculate gradients
-        actor_grads = tape.gradient(loss, self.model.actor.trainable_variables)
-        critic_grads = tape.gradient(loss, self.model.critic.trainable_variables)
-
+        # Aggregate all variables that require gradients
+        all_vars = self.model.actor.trainable_variables + self.model.critic.trainable_variables
         if self.learn_eta:
-            eta_grads = tape.gradient(loss, self.model.eta)
+            all_vars += self.model.eta
 
-        if self.max_grad_norm is not None:
-            actor_grads, actor_norm = tf.clip_by_global_norm(actor_grads, self.max_grad_norm)
-            critic_grads, critic_norm = tf.clip_by_global_norm(critic_grads, self.max_grad_norm)
-            if self.learn_eta:
-                eta_grads, eta_norm = tf.clip_by_global_norm(eta_grads, self.max_grad_norm)
+        # Compute all gradients at once
+        grads = tape.gradient(loss, all_vars)
+        
+        # Separate gradients back into actor, critic, and eta
+        actor_grads = grads[:len(self.model.actor.trainable_variables)]
+        critic_grads = grads[len(self.model.actor.trainable_variables): len(self.model.actor.trainable_variables) + len(self.model.critic.trainable_variables)]
 
-        # Apply gradients using tf.cond for conditional updates
-        def apply_actor_eta_grads():
+        # If eta is being learned, extract its gradient
+        if self.learn_eta:
+            eta_grads = grads[-1]  # Assuming eta is a single variable. Adjust if it's multiple.
+
+        # Proceed with applying gradients
+        if self.itr >= self.n_critic_warmup_itr:
+            if self.max_grad_norm is not None:
+                actor_grads, _ = tf.clip_by_global_norm(actor_grads, self.max_grad_norm)
             self.actor_optimizer.apply_gradients(
                 zip(actor_grads, self.model.actor.trainable_variables)
             )
-            if self.learn_eta:
+            if self.learn_eta and self.batch % self.eta_update_interval == 0:
                 self.eta_optimizer.apply_gradients(
-                    zip(eta_grads, self.model.eta.trainable_variables)
+                    [(eta_grads, self.model.eta)]
                 )
 
-        def apply_critic_grads():
-            self.critic_optimizer.apply_gradients(
-                zip(critic_grads, self.model.critic.trainable_variables)
+        self.critic_optimizer.apply_gradients(
+            zip(critic_grads, self.model.critic.trainable_variables)
+        )
+        return loss, pg_loss, entropy_loss, v_loss, bc_loss, eta, approx_kl, clipfrac, ratio
+
+    def log_metrics(self, approx_kl, update_epoch, batch, clipfracs, explained_var, loss, pg_loss, v_loss, bc_loss, eta):
+        """Logs training metrics, ideally outside of tf.function for performance."""
+        if self.itr % self.log_freq == 0:
+            log.info(
+                f"approx_kl: {approx_kl.numpy()}, update_epoch: {update_epoch}, num_batch: {batch}"
+            )
+            log.info(
+                f"{self.itr}: loss {loss.numpy():8.4f} | pg loss {pg_loss.numpy():8.4f} | value loss {v_loss.numpy():8.4f} | bc loss {bc_loss.numpy():8.4f} | eta {eta.numpy():8.4f}"
             )
 
-        tf.cond(
-            self.itr >= self.n_critic_warmup_itr,
-            true_fn=apply_actor_eta_grads,
-            false_fn=tf.no_op,  # Do nothing if condition is false
-        )
+        if self.use_wandb:
+            wandb.log(
+                {
+                    "approx kl": approx_kl.numpy(),
+                    "clipfrac": np.mean(clipfracs),
+                    "explained variance": explained_var,
+                    "loss": loss.numpy(),
+                    "pg loss": pg_loss.numpy(),
+                    "value loss": v_loss.numpy(),
+                    "bc loss": bc_loss.numpy(),
+                    "eta": eta.numpy(),
+                },
+                step=self.itr
+            )
 
-        apply_critic_grads()
-
-        return loss, pg_loss, entropy_loss, v_loss, bc_loss, eta, approx_kl, clipfrac, ratio
-    
     def run(self):
         """
         Execute the training loop for the PPO Diffusion agent.
@@ -219,63 +243,63 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
 
             prev_obs_tensor = tf.convert_to_tensor(prev_obs_venv["state"], dtype=tf.float32)
             # Collect trajectories from environments
-            # with tf.device('/GPU:0'):
-            for step in tqdm(range(self.n_steps)):
-                # if step % 10 == 0:
-                #     print(f"Processed step {step} of {self.n_steps}")
+            with tf.device('/GPU:0'):
+                for step in tqdm(range(self.n_steps)):
+                    # if step % 10 == 0:
+                    #     print(f"Processed step {step} of {self.n_steps}")
 
-                # Select action based on current observations
-                # if not eval_mode:
-                #     tf.keras.backend.clear_session()  # Optional: clear session if needed
-                cond = {
-                    "state": prev_obs_tensor
-                }
-                samples = self.model(
-                    cond=cond,
-                    deterministic=eval_mode,
-                    return_chain=True,
-                    training=not eval_mode,  # Indicate training mode
-                )
-
-                output_venv = (
-                    samples.trajectories
-                )  # Convert TensorFlow tensor to numpy
-                chains_venv = samples.chains
-                action_venv = output_venv[:, : self.act_steps].numpy()
-
-                # Apply selected actions to the environments
-                (
-                    obs_venv,
-                    reward_venv,
-                    terminated_venv,
-                    truncated_venv,
-                    info_venv,
-                ) = self.venv.step(action_venv)
-                done_venv = terminated_venv | truncated_venv
-
-                if self.save_full_observations:
-                    obs_full_venv = np.array(
-                        [info["full_obs"]["state"] for info in info_venv]
+                    # Select action based on current observations
+                    # if not eval_mode:
+                    #     tf.keras.backend.clear_session()  # Optional: clear session if needed
+                    cond = {
+                        "state": prev_obs_tensor
+                    }
+                    samples = self.model(
+                        cond=cond,
+                        deterministic=eval_mode,
+                        return_chain=True,
+                        training=not eval_mode,  # Indicate training mode
                     )
-                    obs_full_trajs = np.vstack(
-                        (obs_full_trajs, obs_full_venv.transpose(1, 0, 2))
-                    )
-                obs_trajs["state"][step] = prev_obs_venv["state"]
-                chains_trajs[step] = chains_venv
-                reward_trajs[step] = reward_venv
-                terminated_trajs[step] = terminated_venv
-                firsts_trajs[step + 1] = done_venv
+                    output_venv = (
+                        samples.trajectories
+                    )  # Convert TensorFlow tensor to numpy
+                    chains_venv = samples.chains
+    
+                    action_venv = output_venv[:, : self.act_steps].numpy()
 
-                # Update observations for the next step
-                prev_obs_venv = obs_venv
+                    # Apply selected actions to the environments
+                    (
+                        obs_venv,
+                        reward_venv,
+                        terminated_venv,
+                        truncated_venv,
+                        info_venv,
+                    ) = self.venv.step(action_venv)
+                    done_venv = terminated_venv | truncated_venv
 
-                # Increment training step counter
-                if not eval_mode:
-                    cnt_train_step += self.n_envs * self.act_steps
+                    if self.save_full_observations:
+                        obs_full_venv = np.array(
+                            [info["full_obs"]["state"] for info in info_venv]
+                        )
+                        obs_full_trajs = np.vstack(
+                            (obs_full_trajs, obs_full_venv.transpose(1, 0, 2))
+                        )
+                    obs_trajs["state"][step] = prev_obs_venv["state"]
+                    chains_trajs[step] = chains_venv
+                    reward_trajs[step] = reward_venv
+                    terminated_trajs[step] = terminated_venv
+                    firsts_trajs[step + 1] = done_venv
+
+                    # Update observations for the next step
+                    prev_obs_venv = obs_venv
+
+                    # Increment training step counter
+                    if not eval_mode:
+                        cnt_train_step += self.n_envs * self.act_steps
+                    
+                    prev_obs_tensor = tf.convert_to_tensor(obs_venv["state"], dtype=tf.float32)
+
                 
-                prev_obs_tensor = tf.convert_to_tensor(obs_venv["state"], dtype=tf.float32)
-
-            
             # Summarize episode rewards
             episodes_start_end = []
             for env_ind in range(self.n_envs):
@@ -399,81 +423,66 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     lastgaelam = advantages_trajs[t]
                 returns_trajs = advantages_trajs + values_trajs
 
-                # Prepare tensors for gradient updates
-                obs_k = {
-                    "state": einops.rearrange(
-                        obs_trajs["state"],
-                        "s e ... -> (s e) ...",
-                    )
-                }
-                chains_k = einops.rearrange(
-                    tf.convert_to_tensor(chains_trajs, dtype=tf.float32),
-                    "s e t h d -> (s e) t h d",
-                )
-                returns_k = tf.reshape(
-                    tf.convert_to_tensor(returns_trajs, dtype=tf.float32), [-1]
-                )
-                values_k = tf.reshape(
-                    tf.convert_to_tensor(values_trajs, dtype=tf.float32), [-1]
-                )
-                advantages_k = tf.reshape(
-                    tf.convert_to_tensor(advantages_trajs, dtype=tf.float32), [-1]
-                )
-                logprobs_k = tf.convert_to_tensor(logprobs_trajs, dtype=tf.float32)
+                with tf.device('/GPU:0'):
+                    obs_trajs_tensor = {
+                        "state": tf.convert_to_tensor(obs_trajs["state"], dtype=tf.float32)
+                    }
+                    chains_trajs_tensor = tf.convert_to_tensor(chains_trajs, dtype=tf.float32)
+                    returns_trajs_tensor = tf.convert_to_tensor(returns_trajs, dtype=tf.float32)
+                    values_trajs_tensor = tf.convert_to_tensor(values_trajs, dtype=tf.float32)
+                    advantages_trajs_tensor = tf.convert_to_tensor(advantages_trajs, dtype=tf.float32)
+                    logprobs_trajs_tensor = tf.convert_to_tensor(logprobs_trajs, dtype=tf.float32)
 
-                # Initialize variables for tracking
+                    # Prepare tensors for gradient updates (already on GPU)
+                    obs_k = {
+                        "state": einops.rearrange(
+                            obs_trajs_tensor["state"],
+                            "s e ... -> (s e) ...",
+                        )
+                    }
+                    chains_k = einops.rearrange(
+                        chains_trajs_tensor,
+                        "s e t h d -> (s e) t h d",
+                    )
+                    returns_k = tf.reshape(returns_trajs_tensor, [-1])
+                    values_k = tf.reshape(values_trajs_tensor, [-1])
+                    advantages_k = tf.reshape(advantages_trajs_tensor, [-1])
+                    logprobs_k = logprobs_trajs_tensor
+
                 total_steps = self.n_steps * self.n_envs * self.model.ft_denoising_steps
                 clipfracs = []
 
                 # Begin update epochs
                 for update_epoch in range(self.update_epochs):
-                    # Shuffle the data indices for this epoch
                     inds_k = tf.random.shuffle(tf.range(total_steps))
                     num_batch = max(1, total_steps // self.batch_size)
-                    for batch in tqdm(range(num_batch)):
+                    for batch in range(num_batch):
                         start = batch * self.batch_size
                         end = start + self.batch_size
                         inds_b = inds_k[start:end]
+                        obs_b, chains_prev_b, chains_next_b, denoising_inds_b, returns_b, values_b, advantages_b, logprobs_b = \
+                            self.gather_and_process_data(inds_b, obs_k["state"], chains_k, logprobs_k, returns_k, values_k, advantages_k)
 
-                        # Call the tf.function-decorated train_step
-                        (
-                            loss,
-                            pg_loss,
-                            entropy_loss,
-                            v_loss,
-                            bc_loss,
-                            eta,
-                            approx_kl,
-                            clipfrac,
-                            ratio,
-                        ) = self.train_step(
-                            inds_b,
-                            obs_k["state"],
-                            chains_k,
-                            logprobs_k,
-                            returns_k,
-                            values_k,
-                            advantages_k,
+                        loss, pg_loss, entropy_loss, v_loss, bc_loss, eta, approx_kl, clipfrac, ratio = self.train_step(
+                            obs_b,
+                            chains_prev_b,
+                            chains_next_b,
+                            denoising_inds_b,
+                            returns_b,
+                            values_b,
+                            advantages_b,
+                            logprobs_b,
                         )
-                        clipfracs += [clipfrac]
+                        clipfracs += [clipfrac.numpy()]  # Bring clipfrac back to CPU for logging
 
-                        # Logging (ideally, you should move this outside of the tf.function for better performance)
-                        # But only log when necessary to avoid slowing down the training
-                        if self.itr % self.log_freq == 0:
-                            log.info(
-                                f"approx_kl: {approx_kl.numpy()}, update_epoch: {update_epoch}, num_batch: {batch}"
-                            )
+                        y_pred, y_true = values_b.numpy(), returns_b.numpy()
+                        var_y = np.var(y_true)
+                        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-                        # Early stopping based on KL divergence (also better outside tf.function, if possible)
+                        self.log_metrics(approx_kl, update_epoch, batch, clipfracs, explained_var, loss, pg_loss, v_loss, bc_loss, eta)
+
                         if self.target_kl is not None and approx_kl > self.target_kl:
                             break
-
-                # Calculate explained variance of the value function
-                y_pred, y_true = values_k.numpy(), returns_k.numpy()
-                var_y = np.var(y_true)
-                explained_var = (
-                    np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-                )
 
             # Plot state trajectories if required
             if (
@@ -546,23 +555,10 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     run_results[-1]["eval_episode_reward"] = avg_episode_reward
                     run_results[-1]["eval_best_reward"] = avg_best_reward
                 else:
-                    # Logging for training mode
-                    log.info(
-                        f"{self.itr}: step {cnt_train_step:8d} | loss {loss.numpy():8.4f} | pg loss {pg_loss.numpy():8.4f} | value loss {v_loss.numpy():8.4f} | bc loss {bc_loss:8.4f} | reward {avg_episode_reward:8.4f} | eta {eta.numpy():8.4f} | t:{time:8.4f}"
-                    )
                     if self.use_wandb:
                         wandb.log(
                             {
                                 "total env step": cnt_train_step,
-                                "loss": loss,
-                                "pg loss": pg_loss.numpy(),
-                                "value loss": v_loss.numpy(),
-                                "bc loss": bc_loss,
-                                "eta": eta.numpy(),
-                                "approx kl": approx_kl.numpy(),
-                                "ratio": ratio.numpy(),
-                                "clipfrac": np.mean(clipfracs),
-                                "explained variance": explained_var,
                                 "avg episode reward - train": avg_episode_reward,
                                 "num episode - train": num_episode_finished,
                                 "diffusion - min sampling std": diffusion_min_sampling_std,

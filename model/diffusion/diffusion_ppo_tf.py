@@ -73,6 +73,7 @@ class PPODiffusion(VPGDiffusion):
         self.clip_advantage_lower_quantile = clip_advantage_lower_quantile
         self.clip_advantage_upper_quantile = clip_advantage_upper_quantile
 
+    @tf.function
     def loss(
         self,
         obs,
@@ -106,6 +107,8 @@ class PPODiffusion(VPGDiffusion):
         Returns:
             Tuple: A tuple containing various loss components and statistics.
         """
+
+        
         newlogprobs, eta = self.get_logprobs_subsample(
             obs,
             chains_prev,
@@ -126,7 +129,6 @@ class PPODiffusion(VPGDiffusion):
 
         oldlogprobs = tf.reduce_mean(oldlogprobs, axis=[-1, -2])
         oldlogprobs = tf.reshape(oldlogprobs, [-1])
-
         bc_loss = 0.0
         if use_bc_loss:
             samples = self(
@@ -145,25 +147,21 @@ class PPODiffusion(VPGDiffusion):
             bc_logprobs = tf.reduce_mean(bc_logprobs, axis=[-1, -2])
             bc_logprobs = tf.reshape(bc_logprobs, [-1])
             bc_loss = -tf.reduce_mean(bc_logprobs)
-
         if self.norm_adv:
             advantages = (advantages - tf.reduce_mean(advantages)) / (tf.math.reduce_std(advantages) + 1e-8)
-
+       
         advantage_min = tfp.stats.percentile(advantages, self.clip_advantage_lower_quantile * 100)
         advantage_max = tfp.stats.percentile(advantages, self.clip_advantage_upper_quantile * 100)
         advantages = tf.clip_by_value(advantages, advantage_min, advantage_max)
-        
-        discount_list = [
-            self.gamma_denoising ** float(self.ft_denoising_steps - i - 1)
-            for i in denoising_inds
-        ]
+        steps = tf.range(tf.cast(self.ft_denoising_steps, tf.float32))
+        discount = self.gamma_denoising ** (self.ft_denoising_steps - steps - 1)
+        discount = tf.gather(discount, denoising_inds)
         # Then convert the list to a tensor
-        discount = tf.constant(discount_list, dtype=tf.float32)
+        # discount = tf.constant(discount_list, dtype=tf.float32)
         advantages *= discount
 
         logratio = newlogprobs - oldlogprobs
         ratio = tf.exp(logratio)
-
         t = tf.cast(denoising_inds, tf.float32) / (self.ft_denoising_steps - 1)
         if self.ft_denoising_steps > 1:
             clip_ploss_coef = self.clip_ploss_coef_base + (
@@ -173,14 +171,11 @@ class PPODiffusion(VPGDiffusion):
             )
         else:
             clip_ploss_coef = t
-
         approx_kl = tf.reduce_mean((ratio - 1) - logratio)
         clipfrac = tf.reduce_mean(tf.cast(tf.abs(ratio - 1.0) > clip_ploss_coef, tf.float32))
-
-        pg_loss1 = -advantages * ratio
+        pg_loss1 = -tf.multiply(advantages, ratio)
         pg_loss2 = -advantages * tf.clip_by_value(ratio, 1 - clip_ploss_coef, 1 + clip_ploss_coef)
         pg_loss = tf.reduce_mean(tf.maximum(pg_loss1, pg_loss2))
-
         newvalues = self.critic(obs)
         newvalues = tf.reshape(newvalues, [-1])
         if self.clip_vloss_coef is not None:
@@ -193,7 +188,6 @@ class PPODiffusion(VPGDiffusion):
             # log.info(f"newvalues: {newvalues.shape}, returns: {returns.shape}")
             # log.info(f"newvalues: {type(newvalues)}, returns: {(returns)}")
             v_loss = 0.5 * tf.reduce_mean(tf.square(newvalues - returns))
-
         return (
             pg_loss,
             entropy_loss,
