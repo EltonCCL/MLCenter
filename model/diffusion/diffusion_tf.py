@@ -88,21 +88,50 @@ class DiffusionModel(tf.keras.Model):
                     (1, self.obs_dim)
                 )  # Adjust based on actual cond structure
             }
-
             if network_path is not None:
-                self.network(dummy_input, time=dummy_time, cond=dummy_cond)
+                self.network(
+                    dummy_input,
+                    time=dummy_time,
+                    cond=dummy_cond,
+                    )
+                original_parameter = self.network.get_weights()
+                latest = tf.train.latest_checkpoint(network_path)
 
-                checkpoint = tf.train.Checkpoint(model=self.network)
-                manager = tf.train.CheckpointManager(
-                    checkpoint, network_path, max_to_keep=5
-                )
-                if manager.latest_checkpoint:
-                    # Build the network by calling the model with dummy cond
 
-                    checkpoint.restore(manager.latest_checkpoint).expect_partial()
-                    log.info(f"Loaded model from {manager.latest_checkpoint}")
+                has_ema = False
+                checkpoint_vars = {}
+                for name, shape in tf.train.list_variables(latest):
+                    checkpoint_vars[name] = shape
+                    if "ema" in name:
+                        has_ema = True
+
+                if has_ema:
+                    # Load the checkpoint
+                    checkpoint = tf.train.Checkpoint(
+                        ema_model=tf.train.Checkpoint(
+                            network=self.network
+                        )
+                    )
+                    status = checkpoint.restore(latest)
+                    status.expect_partial()
+                    loaded_parameter = self.network.get_weights()
+                    assert len(original_parameter) == len(loaded_parameter), "Model parameters mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Model parameters are the same"
+                    logging.info("Loaded SL-trained policy from %s", network_path)
                 else:
-                    log.warning(f"No checkpoint found at {network_path}")
+                    checkpoint = tf.train.Checkpoint(
+                        model=tf.train.Checkpoint(
+                            network=self.network
+                        )
+                    )
+                    status = checkpoint.restore(latest)
+                    status.expect_partial()
+                    loaded_parameter = self.network.get_weights()
+                    assert len(original_parameter) == len(loaded_parameter), "Model parameters mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Model parameters are the same"
+                    logging.info("Loaded RL-trained policy from %s", network_path)
+            else:
+                log.warning(f"No checkpoint found at {network_path}")
 
             # DDPM parameters
             self.betas = cosine_beta_schedule(denoising_steps)
