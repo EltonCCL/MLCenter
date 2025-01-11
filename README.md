@@ -6,6 +6,16 @@ This project explores the implementation of the paper "[Diffusion Policy Policy 
 
 Please follow the installation guide of from the initial ([repo](https://github.com/irom-princeton/dppo)).
 
+fatal error: GL/glew.h: No such file or director
+```
+conda install -c conda-forge glew
+conda install -c conda-forge mesalib
+conda install -c menpo glfw3
+```
+```
+export CPATH=$CONDA_PREFIX/include
+```
+
 ## Usage
 
 ### Pre-training
@@ -34,6 +44,7 @@ python script/run_tf.py --config-name=ft_ppo_diffusion_mlp_tf \
 
 
 ## Testing
+```
 Directory structure:
 └── MLCenter (fork from irom-princeton-dppo)
     ├── agent
@@ -42,29 +53,29 @@ Directory structure:
     │   │   ├── train_ppo_diffusion_agent_tf.py
     │   │   └── train_ppo_agent_tf.py
     │   ├── dataset
-    │   │   └── sequence_tf.py
+    │   │   └── sequence_tf.py ✓
     │   └── pretrain
-    │       ├── train_agent_tf.py
-    │       └── train_diffusion_agent_tf.py
+    │       ├── train_agent_tf.py ✓
+    │       └── train_diffusion_agent_tf.py ✓
     ├── script
     │   ├── run_tf.py
     │   └── run.py
     ├── pyproject.toml
     ├── util
-    │   ├── reward_scaling_tf.py
-    │   └── scheduler_tf.py
+    │   ├── reward_scaling.py
+    │   └── scheduler_tf.py ✓
     ├── model
     │   ├── diffusion
-    │   │   ├── diffusion_ppo.py
-    │   │   ├── sampling.py
-    │   │   ├── mlp_diffusion.py
-    │   │   ├── diffusion.py
+    │   │   ├── diffusion_ppo.py 
+    │   │   ├── sampling.py ✓
+    │   │   ├── mlp_diffusion.py ✓
+    │   │   ├── diffusion.py ✓
     │   │   ├── diffusion_vpg.py
-    │   │   └── modules.py
+    │   │   └── modules.py ✓
     │   └── common
-    │       ├── mlp.py
-    │       ├── critic.py
-    │       └── modules.py
+    │       ├── mlp.py ✓
+    │       ├── critic.py ✓
+    │       └── modules.py ✓
     └── cfg
         └── gym
             ├── finetune
@@ -80,3 +91,4 @@ Directory structure:
             └── pretrain
                 └── hopper-medium-v2
                     └── pre_diffusion_mlp_tf.yaml
+```
