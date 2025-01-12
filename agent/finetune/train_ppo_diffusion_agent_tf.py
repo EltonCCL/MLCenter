@@ -128,7 +128,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 + bc_loss * self.bc_loss_coeff
             )
         # Aggregate all variables that require gradients
-        all_vars = self.model.actor.trainable_variables + self.model.critic.trainable_variables
+        all_vars = self.model.actor_lr.trainable_variables + self.model.critic.trainable_variables
         if self.learn_eta:
             all_vars += self.model.eta
 
@@ -136,8 +136,8 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
         grads = tape.gradient(loss, all_vars)
         
         # Separate gradients back into actor, critic, and eta
-        actor_grads = grads[:len(self.model.actor.trainable_variables)]
-        critic_grads = grads[len(self.model.actor.trainable_variables): len(self.model.actor.trainable_variables) + len(self.model.critic.trainable_variables)]
+        actor_grads = grads[:len(self.model.actor_lr.trainable_variables)]
+        critic_grads = grads[len(self.model.actor_lr.trainable_variables): len(self.model.actor_lr.trainable_variables) + len(self.model.critic.trainable_variables)]
 
         # If eta is being learned, extract its gradient
         if self.learn_eta:
@@ -148,7 +148,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
             if self.max_grad_norm is not None:
                 actor_grads, _ = tf.clip_by_global_norm(actor_grads, self.max_grad_norm)
             self.actor_optimizer.apply_gradients(
-                zip(actor_grads, self.model.actor.trainable_variables)
+                zip(actor_grads, self.model.actor_lr.trainable_variables)
             )
             if self.learn_eta and self.batch % self.eta_update_interval == 0:
                 self.eta_optimizer.apply_gradients(
@@ -362,8 +362,9 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 for obs, chains in zip(obs_ts, chains_ts_k):
                     logprobs = self.model.get_logprobs(obs, chains).numpy()
                     # Preserve the denoising_steps dimension in reshape
+
                     logprobs_trajs.append(
-                        logprobs.reshape(1, *logprobs.shape)
+                        logprobs.reshape(-1, self.model.ft_denoising_steps, self.horizon_steps, self.action_dim)
                     )  # Keep all dimensions
                 logprobs_trajs = np.vstack(logprobs_trajs)
 
@@ -452,9 +453,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                         )
                         clipfracs += [clipfrac.numpy()]  # Bring clipfrac back to CPU for logging
 
-                        y_pred, y_true = values_b.numpy(), returns_b.numpy()
-                        var_y = np.var(y_true)
-                        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+                
 
                         # self.log_metrics(approx_kl, update_epoch, batch, clipfracs, explained_var, loss, pg_loss, v_loss, bc_loss, eta)
                         log.info(
@@ -547,6 +546,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                     if self.use_wandb:
                         wandb.log(
                             {
+                                "total env step": cnt_train_step,
                                 "loss": loss,
                                 "pg loss": pg_loss,
                                 "value loss": v_loss,
