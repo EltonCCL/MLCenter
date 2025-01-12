@@ -51,7 +51,8 @@ class TrainPPOAgent(TrainAgent):
         # Optimizers
         self.actor_optimizer = tf.keras.optimizers.AdamW(
             learning_rate=self.actor_lr_scheduler,
-            weight_decay=cfg.train.actor_weight_decay,  # TensorFlow uses decay differently
+            weight_decay=cfg.train.actor_weight_decay,
+            epsilon=1e-8  # TensorFlow uses decay differently
         )
 
         self.critic_lr_scheduler = CosineAnnealingWarmupRestarts(
@@ -65,6 +66,7 @@ class TrainPPOAgent(TrainAgent):
         self.critic_optimizer = tf.keras.optimizers.AdamW(
             learning_rate=cfg.train.critic_lr,
             weight_decay=cfg.train.critic_weight_decay,
+            epsilon=1e-8  # TensorFlow uses decay differently
         )
 
         # Generalized Advantage Estimation
@@ -95,6 +97,7 @@ class TrainPPOAgent(TrainAgent):
         self.bc_loss_coeff: float = cfg.train.get("bc_loss_coeff", 0)
 
     def reset_actor_optimizer(self):
+        assert False, "Not used anywhere currently"
         """Reset the actor optimizer to its initial state."""
         # Save the current optimizer weights
         old_weights = self.actor_optimizer.get_weights()
