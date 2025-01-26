@@ -128,7 +128,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
                 + bc_loss * self.bc_loss_coeff
             )
         # Aggregate all variables that require gradients
-        all_vars = self.model.actor_lr.trainable_variables + self.model.critic.trainable_variables
+        all_vars = self.model.actor_ft.trainable_variables + self.model.critic.trainable_variables
         if self.learn_eta:
             all_vars += self.model.eta
 
@@ -136,8 +136,8 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
         grads = tape.gradient(loss, all_vars)
         
         # Separate gradients back into actor, critic, and eta
-        actor_grads = grads[:len(self.model.actor_lr.trainable_variables)]
-        critic_grads = grads[len(self.model.actor_lr.trainable_variables): len(self.model.actor_lr.trainable_variables) + len(self.model.critic.trainable_variables)]
+        actor_grads = grads[:len(self.model.actor_ft.trainable_variables)]
+        critic_grads = grads[len(self.model.actor_ft.trainable_variables): len(self.model.actor_ft.trainable_variables) + len(self.model.critic.trainable_variables)]
 
         # If eta is being learned, extract its gradient
         if self.learn_eta:
@@ -148,7 +148,7 @@ class TrainPPODiffusionAgent(TrainPPOAgent):
             if self.max_grad_norm is not None:
                 actor_grads, _ = tf.clip_by_global_norm(actor_grads, self.max_grad_norm)
             self.actor_optimizer.apply_gradients(
-                zip(actor_grads, self.model.actor_lr.trainable_variables)
+                zip(actor_grads, self.model.actor_ft.trainable_variables)
             )
             if self.learn_eta and self.batch % self.eta_update_interval == 0:
                 self.eta_optimizer.apply_gradients(
