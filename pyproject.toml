@@ -23,7 +23,9 @@ dependencies = [
     "pretty_errors==1.2.25",
     "tensorflow==2.13.1",
     "tqdm==4.66.5",
-    "wandb==0.17.7"
+    "wandb==0.17.7",
+    "pytest==8.3.4,
+    "tensorflow-probability==0.21.0"
 ]
 
 [project.optional-dependencies]

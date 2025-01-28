@@ -23,6 +23,31 @@ from model.diffusion.diffusion_tf import DiffusionModel, Sample
 from model.diffusion.sampling_tf import make_timesteps, extract
 from tensorflow_probability import distributions as tfd
 
+class EMA:
+    """
+    Empirical Moving Average for TensorFlow models.
+
+    Args:
+        cfg: Configuration parameters containing decay rate.
+    """
+    def __init__(self, cfg):
+        super().__init__()
+        assert hasattr(cfg, 'decay'), "Config must have 'decay' parameter."
+        self.beta = cfg.decay
+
+    def update_model_average(self, ma_model, current_model):
+        for current_weights, ma_weights in zip(
+            current_model.trainable_weights, 
+            ma_model.trainable_weights
+        ):
+            ma_weights.assign(
+                self.update_average(ma_weights, current_weights)
+            )
+
+    def update_average(self, old, new):
+        if old is None:
+            return new
+        return old * self.beta + (1 - self.beta) * new
 
 class VPGDiffusion(DiffusionModel):
     def __init__(
@@ -58,6 +83,7 @@ class VPGDiffusion(DiffusionModel):
         self.ft_denoising_steps_cnt = 0
 
         # Minimum std used in denoising process when sampling action - helps exploration
+        assert isinstance(min_sampling_denoising_std, float)
         self.min_sampling_denoising_std = (
             tf.Variable(min_sampling_denoising_std, trainable=False)
             if isinstance(min_sampling_denoising_std, float)
@@ -118,21 +144,16 @@ class VPGDiffusion(DiffusionModel):
         self.critic.trainable = True
 
         if network_path is not None:
-            checkpoint = tf.train.Checkpoint(model=self.network)
-            manager = tf.train.CheckpointManager(
-                checkpoint, network_path, max_to_keep=5
-            )
-            # List all variables in the checkpoint
-            checkpoint_path = manager.latest_checkpoint
-            variables = tf.train.list_variables(checkpoint_path)
-            # Print all variables and check for ema_model
-            has_ema = False
+            # Load the checkpoint directly
+            checkpoint = tf.train.load_checkpoint(network_path)
+            
+            # Check if 'ema' exists in the checkpoint
+            checkpoint_vars = checkpoint.get_variable_to_shape_map()
+            has_ema = any('ema' in var_name for var_name in checkpoint_vars)
 
-            for var_name, shape in variables:
-                if var_name.startswith("ema_model/"):
-                    has_ema = True
-            assert has_ema, "Checkpoint does not contain ema_model"
-            # TODO: Load ema_model
+            if not has_ema:  # load trained RL model
+                self.load_weights(network_path)
+                logging.info(f"Loaded model from {network_path}")
 
         log.info("---------- INIT VPGDiffusion OK ----------")
 
@@ -145,8 +166,9 @@ class VPGDiffusion(DiffusionModel):
         Current configs do not apply annealing
         """
         # Anneal min_sampling_denoising_std
-        if not isinstance(self.min_sampling_denoising_std, float):
-            self.min_sampling_denoising_std.assign_next()
+
+        # if not isinstance(self.min_sampling_denoising_std, float):
+        #     self.min_sampling_denoising_std.assign_next()
 
         # Anneal denoising steps
         self.ft_denoising_steps_cnt += 1
@@ -168,12 +190,14 @@ class VPGDiffusion(DiffusionModel):
             )
 
     def get_min_sampling_denoising_std(self):
-        if isinstance(self.min_sampling_denoising_std, float):
-            return self.min_sampling_denoising_std
-        else:
-            return self.min_sampling_denoising_std  # Removed .numpy()
+        return self.min_sampling_denoising_std
+        # if isinstance(self.min_sampling_denoising_std, float):
+        #     return self.min_sampling_denoising_std
+        # else:
+        #     return self.min_sampling_denoising_std  # Removed .numpy()
 
     # Override
+    @tf.function(reduce_retracing=True)
     def p_mean_var(
         self,
         x,
@@ -183,6 +207,9 @@ class VPGDiffusion(DiffusionModel):
         use_base_policy=False,
         deterministic=False,
     ):
+        """
+        Optimized version using boolean masking instead of tf.tensor_scatter_nd_update.
+        """
         # Dynamically determine the concatenation dimension
         noise = self.actor(x, t, cond=cond)
         if self.use_ddim:
@@ -201,9 +228,14 @@ class VPGDiffusion(DiffusionModel):
             noise_ft = actor(
                 tf.gather(x, ft_indices), tf.gather(t, ft_indices), cond=cond_ft
             )
-            noise = tf.tensor_scatter_nd_update(
-                noise, tf.expand_dims(ft_indices, 1), noise_ft
-            )
+
+            # Create a boolean mask (cast shape to int64)
+            mask = tf.scatter_nd(tf.expand_dims(ft_indices, 1), tf.ones_like(ft_indices, dtype=tf.bool), shape=tf.cast(tf.shape(noise)[:1], tf.int64))
+            mask = tf.expand_dims(mask, axis=-1)
+            mask = tf.expand_dims(mask, axis=-1)
+
+            # Update noise using boolean masking
+            noise = tf.where(mask, noise_ft, noise)
 
         # Predict x_0
         if self.predict_epsilon:
@@ -278,7 +310,7 @@ class VPGDiffusion(DiffusionModel):
 
         return mu, logvar, etas
 
-    # Override
+    @tf.function(reduce_retracing=True)
     def call(
         self,
         cond,
@@ -287,42 +319,57 @@ class VPGDiffusion(DiffusionModel):
         use_base_policy=False,
     ):
         """
-        Forward pass for sampling actions.
-
-        Args:
-            cond: dict with key state/rgb; more recent obs at the end
-                state: (B, To, Do)
-                rgb: (B, To, C, H, W)
-            deterministic: If true, then std=0 with DDIM, or with DDPM, use normal schedule (instead of clipping at a higher value)
-            return_chain: whether to return the entire chain of denoised actions
-            use_base_policy: whether to use the frozen pre-trained policy instead
-        Return:
-            Sample: namedtuple with fields:
-                trajectories: (B, Ta, Da)
-                chain: (B, K + 1, Ta, Da)
+        Optimized version using tf.while_loop and pre-allocated chain tensor.
         """
-        device = self.betas.device  # Assuming self.betas exists in DiffusionModel
+        device = self.betas.device
+
         sample_data = cond["state"] if "state" in cond else cond["rgb"]
         B = tf.shape(sample_data)[0]
 
         # Get updated minimum sampling denoising std
-        min_sampling_denoising_std = self.get_min_sampling_denoising_std()
-
+        # min_sampling_denoising_std = self.get_min_sampling_denoising_std()
+        min_sampling_denoising_std = self.min_sampling_denoising_std
         # Initialize x with standard normal
         x = tf.random.normal((B, self.horizon_steps, self.action_dim), dtype=tf.float32)
 
         if self.use_ddim:
             t_all = self.ddim_t
+            num_timesteps = tf.shape(self.ddim_t)[0]
         else:
             t_all = tf.reverse(tf.range(self.denoising_steps), axis=[0])
+            num_timesteps = self.denoising_steps
 
-        chain = [] if return_chain else None
-        if (not self.use_ddim and self.ft_denoising_steps == self.denoising_steps) or (
-            self.use_ddim and self.ft_denoising_steps == self.ddim_steps
-        ):
-            chain.append(x)
+        # Initialize loop variables
+        i = tf.constant(0, dtype=tf.int32)
 
-        for i, t in enumerate(t_all):
+        # Pre-allocate chain tensor
+        if return_chain:
+            # Calculate max_chain_length
+            if not self.use_ddim:
+                max_chain_length = tf.where(self.ft_denoising_steps < self.denoising_steps, self.ft_denoising_steps + 1, self.ft_denoising_steps)
+            else:
+                max_chain_length = tf.where(self.ft_denoising_steps < self.ddim_steps, self.ft_denoising_steps + 1, self.ft_denoising_steps)
+
+            chain = tf.TensorArray(dtype=tf.float32, size=max_chain_length, dynamic_size=False)
+
+            # Conditionally initialize chain with x
+            if (not self.use_ddim and self.ft_denoising_steps < self.denoising_steps) or (
+                self.use_ddim and self.ft_denoising_steps < self.ddim_steps
+            ):
+                chain = chain.write(0, x)
+                write_index = tf.constant(1, dtype=tf.int32)
+            else:
+                write_index = tf.constant(0, dtype=tf.int32)
+
+        else:
+            chain = tf.zeros((0,), dtype=tf.float32)
+            write_index = tf.constant(0, dtype=tf.int32) # Placeholder
+
+        def cond_fun(i, x, write_index, chain):
+            return i < num_timesteps
+
+        def body_fun(i, x, write_index, chain):
+            t = t_all[i]
             t_b = make_timesteps(B, t, device)
             index_b = make_timesteps(B, i, device)
             mean, logvar, _ = self.p_mean_var(
@@ -355,20 +402,43 @@ class VPGDiffusion(DiffusionModel):
             x = mean + std * noise
 
             # Clamp action at final step
-            if self.final_action_clip_value is not None and i == len(t_all) - 1:
+            if self.final_action_clip_value is not None and i == num_timesteps - 1:
                 x = tf.clip_by_value(
                     x, -self.final_action_clip_value, self.final_action_clip_value
                 )
 
+            # Conditionally write to chain using write_index
             if return_chain:
-                if (not self.use_ddim and t <= self.ft_denoising_steps) or (
-                    self.use_ddim
-                    and i >= (self.ddim_steps - self.ft_denoising_steps - 1)
-                ):
-                    chain.append(x)
+                # Create a mask for when to write to the chain
+                if self.use_ddim:
+                    write_condition = i >= (self.ddim_steps - self.ft_denoising_steps)
+                else:
+                    write_condition = t < self.ft_denoising_steps
 
+                # Write to chain and increment write_index if condition is met
+                chain = tf.cond(write_condition, lambda: chain.write(write_index, x), lambda: chain)
+                write_index = tf.cond(write_condition, lambda: write_index + 1, lambda: write_index)
+
+            return i + 1, x, write_index, chain
+
+        # Use tf.while_loop for iteration
+        _, x, write_index, chain = tf.while_loop(
+            cond_fun,
+            body_fun,
+            [i, x, write_index, chain],
+            shape_invariants=[
+                i.get_shape(),
+                x.get_shape(),
+                write_index.get_shape(),
+                tf.TensorShape(None), # Use TensorArray instead
+            ],
+        )
+
+        # Process the chain after the loop
         if return_chain:
-            chain = tf.stack(chain, axis=1)
+            chain = chain.stack()
+            chain = tf.transpose(chain, perm=[1, 0, 2, 3])
+
         return Sample(x, chain)
 
     # ---------- RL training ----------#
@@ -457,6 +527,7 @@ class VPGDiffusion(DiffusionModel):
             return log_prob, eta
         return log_prob
 
+    @tf.function(reduce_retracing=True)
     def get_logprobs_subsample(
         self,
         cond,
@@ -526,6 +597,7 @@ class VPGDiffusion(DiffusionModel):
         return log_prob
 
     def loss(self, cond, chains, reward):
+        assert False, "Not implemented"
         """
         REINFORCE loss. Not used right now.
 

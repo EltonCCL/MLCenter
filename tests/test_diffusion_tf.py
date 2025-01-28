@@ -8,6 +8,12 @@ import numpy as np
 from model.diffusion.diffusion_tf import DiffusionModel, Sample
 from collections import namedtuple
 
+@pytest.fixture(autouse=True)
+def run_eager():
+    tf.config.run_functions_eagerly(True)
+    yield
+    tf.config.run_functions_eagerly(False)
+
 # Create a simple mock network for testing
 class MockNetwork(tf.keras.Model):
     """Mock TensorFlow network that returns a tensor of ones with the same shape as input."""

@@ -31,7 +31,7 @@ class TrainDiffusionAgent(PreTrainAgent):
         """
         super().__init__(cfg)
 
-    @tf.function
+    @tf.function(reduce_retracing=True)
     def train_step(self, batch):
         """
         Performs a single training step on the given batch.
@@ -42,6 +42,11 @@ class TrainDiffusionAgent(PreTrainAgent):
         Returns:
             The computed loss for the batch.
         """
+
+        #print input type and shape for debugging
+        # print("Input batch type:", type(batch))
+        # print("Input batch shape (if applicable):", [b.shape for b in batch if hasattr(b, 'shape')])
+
         with tf.GradientTape() as tape:
             loss = self.model.loss(*batch)
         gradients = tape.gradient(loss, self.model.trainable_variables)
@@ -57,9 +62,10 @@ class TrainDiffusionAgent(PreTrainAgent):
         cnt_batch = 0
         log.info("Starting training")
         for epoch in range(self.n_epochs):
-            log.info(f"Epoch {epoch}")
             # Training
             train_loss_metric = tf.keras.metrics.Mean()
+            epoch_lr = self.lr_scheduler(self.epoch).numpy()
+            self.optimizer.learning_rate.assign(epoch_lr)
         
             for batch_train in tqdm(self.dataloader_train):
                 loss_train = self.train_step(batch_train)

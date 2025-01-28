@@ -117,14 +117,15 @@ class PreTrainAgent:
         self.ema = EMA(cfg.ema)
         
         # Create EMA model with identical configuration
-        self.ema_model = hydra.utils.instantiate(cfg.model)
-        
+        self.ema_model = hydra.utils.instantiate(cfg.model) 
+
         # Build both models by calling them with dummy data
         batch_size = cfg.train.batch_size
         horizon_steps = cfg.horizon_steps
         obs_dim = cfg.obs_dim
         action_dim = cfg.action_dim
         cond_steps = cfg.cond_steps
+        
         
         # Create dummy inputs in the correct format
         dummy_cond = {
@@ -148,6 +149,10 @@ class PreTrainAgent:
         self.epoch_start_ema = cfg.train.get("epoch_start_ema", 20)
         self.update_ema_freq = cfg.train.get("update_ema_freq", 10)
         self.val_freq = cfg.train.get("val_freq", 100)
+        self.cond_steps = cfg.cond_steps
+        self.obs_dim = cfg.obs_dim
+        self.horizon_steps = cfg.horizon_steps
+        self.action_dim = cfg.action_dim
 
         # Logging, checkpoints
         self.logdir = cfg.logdir
@@ -194,7 +199,7 @@ class PreTrainAgent:
         )
 
         self.optimizer = tf.keras.optimizers.AdamW(
-            learning_rate=self.lr_scheduler,
+            learning_rate=cfg.train.learning_rate,
             weight_decay=cfg.train.weight_decay
         )
 

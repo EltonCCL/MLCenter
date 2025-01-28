@@ -47,12 +47,12 @@ class TrainPPOAgent(TrainAgent):
             min_lr=cfg.train.actor_lr_scheduler.min_lr,
             warmup_steps=cfg.train.actor_lr_scheduler.warmup_steps,
             gamma=1.0,
-            n_critic_warmup_itr=self.n_critic_warmup_itr,
         )
         # Optimizers
-        self.actor_optimizer = tf.keras.optimizers.Adam(
+        self.actor_optimizer = tf.keras.optimizers.AdamW(
             learning_rate=self.actor_lr_scheduler,
-            weight_decay=cfg.train.actor_weight_decay,  # TensorFlow uses decay differently
+            weight_decay=cfg.train.actor_weight_decay,
+            epsilon=1e-8  # TensorFlow uses decay differently
         )
 
         self.critic_lr_scheduler = CosineAnnealingWarmupRestarts(
@@ -63,9 +63,10 @@ class TrainPPOAgent(TrainAgent):
             warmup_steps=cfg.train.critic_lr_scheduler.warmup_steps,
             gamma=1.0,
         )
-        self.critic_optimizer = tf.keras.optimizers.Adam(
-            learning_rate=self.critic_lr_scheduler,
+        self.critic_optimizer = tf.keras.optimizers.AdamW(
+            learning_rate=cfg.train.critic_lr,
             weight_decay=cfg.train.critic_weight_decay,
+            epsilon=1e-8  # TensorFlow uses decay differently
         )
 
         # Generalized Advantage Estimation
@@ -96,6 +97,7 @@ class TrainPPOAgent(TrainAgent):
         self.bc_loss_coeff: float = cfg.train.get("bc_loss_coeff", 0)
 
     def reset_actor_optimizer(self):
+        assert False, "Not used anywhere currently"
         """Reset the actor optimizer to its initial state."""
         # Save the current optimizer weights
         old_weights = self.actor_optimizer.get_weights()
@@ -112,7 +114,7 @@ class TrainPPOAgent(TrainAgent):
 
         # Create a new optimizer with the new scheduler
         new_optimizer = tf.keras.optimizers.Adam(
-            learning_rate=new_scheduler,
+            learning_rate=self.cfg.train.actor_lr,
             decay=self.cfg.train.actor_weight_decay,
         )
 
