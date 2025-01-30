@@ -109,7 +109,8 @@ class TrainSACDiffusionAgent(TrainAgent):
                     )
 
                     action_venv = samples.trajectories[:, : self.act_steps].numpy()
-                    
+                    # action_venv shape (n_env, act_steps, act_dim)
+
                     # Apply selected actions to the environments
                     (
                         obs_venv,
@@ -118,19 +119,75 @@ class TrainSACDiffusionAgent(TrainAgent):
                         truncated_venv,
                         info_venv,
                     ) = self.venv.step(action_venv)
+
+                    # obs_venv shape (n_env, 1, obs_dim)
+                    # reward_venv shape (n_env, )
+                    # terminated_venv shape (n_env, )
+                    # truncated_venv shape (n_env, )
+
                     done_venv = terminated_venv | truncated_venv
                     reward_trajs[step] = reward_venv
                     firsts_trajs[step + 1] = done_venv
 
                     # add to buffer
                     if not eval_mode:
-                        obs_buffer.append(prev_obs_venv["state"])
+                        obs_buffer.append(prev_obs_tensor.numpy())
                         action_buffer.append(action_venv)
-                        reward_buffer.append(reward_venv * self.scale_reward_factor)
+                        reward_buffer.append(reward_venv)
                         terminated_buffer.append(terminated_venv)
-
                     prev_obs_tensor = tf.convert_to_tensor(obs_venv["state"], dtype=tf.float32)
+                        # Summarize episode rewards
 
-                    exit()
-                # Update the replay buffer
+            episodes_start_end = []
+            for env_ind in range(self.n_envs):
+                env_steps = np.where(firsts_trajs[:, env_ind] == 1)[0]
+                for i in range(len(env_steps) - 1):
+                    start = env_steps[i]
+                    end = env_steps[i + 1]
+                    if end - start > 1:
+                        episodes_start_end.append((env_ind, start, end - 1))
+            if len(episodes_start_end) > 0:
+                reward_trajs_split = [
+                    reward_trajs[start : end + 1, env_ind]
+                    for env_ind, start, end in episodes_start_end
+                ]
+                num_episode_finished = len(reward_trajs_split)
+                episode_reward = np.array(
+                    [np.sum(reward_traj) for reward_traj in reward_trajs_split]
+                )
+                if self.furniture_sparse_reward:
+                    episode_best_reward = episode_reward
+                else:
+                    episode_best_reward = np.array(
+                        [
+                            np.max(reward_traj) / self.act_steps
+                            for reward_traj in reward_trajs_split
+                        ]
+                    )
+                avg_episode_reward = np.mean(episode_reward)
+                avg_best_reward = np.mean(episode_best_reward)
+                success_rate = np.mean(
+                    episode_best_reward >= self.best_reward_threshold_for_success
+                )
+            else:
+                episode_reward = np.array([])
+                num_episode_finished = 0
+                avg_episode_reward = 0
+                avg_best_reward = 0
+                success_rate = 0
+                log.warning("No episode completed within the iteration!")
+            
+            # Update models if not in evaluation mode
+            if not eval_mode:
+                pass
+            
+            # trajectory plotter
+
+            # Update learning rate
+
+            # Save the model at specified intervals
+            if self.itr % self.save_model_freq == 0 or self.itr == self.n_train_itr - 1:
+                self.save_model()
+            
+            # log loss and save metrics
             self.itr += 1
