@@ -201,7 +201,7 @@ class SACDiffusion(DiffusionModel):
         self,
         cond,
         deterministic=False,
-        return_chain=True,
+        return_chain=False,
     ):
         """
         Optimized version using tf.while_loop and pre-allocated chain tensor.
