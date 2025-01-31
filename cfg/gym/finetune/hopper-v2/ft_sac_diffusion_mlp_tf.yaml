@@ -16,6 +16,7 @@ env_name: hopper-medium-v2
 obs_dim: 11
 action_dim: 3
 denoising_steps: 20
+ft_denoising_steps: 10
 cond_steps: 1
 horizon_steps: 4
 act_steps: 4
@@ -118,6 +119,7 @@ model:
     action_step: ${act_steps}
     activation_type: Mish
     residual_style: True
+  ft_denoising_steps: ${ft_denoising_steps}
   horizon_steps: ${horizon_steps}
   obs_dim: ${obs_dim}
   action_dim: ${action_dim}
