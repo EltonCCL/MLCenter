@@ -338,7 +338,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                         min_q_pi = tf.minimum(q1_pi, q2_pi)
                         actor_loss = tf.reduce_mean(-min_q_pi)
    
-                    actor_var = self.model.actor.trainable_variables
+                    actor_var = self.model.actor_ft.trainable_variables
                     actor_gradients = tape.gradient(actor_loss, actor_var)
                     self.actor_optimizer.apply_gradients(zip(actor_gradients, actor_var))
 
