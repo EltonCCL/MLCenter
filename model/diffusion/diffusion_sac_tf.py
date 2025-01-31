@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 from omegaconf import ListConfig
 import tensorflow as tf
@@ -16,6 +17,7 @@ class SACDiffusion(DiffusionModel):
         actor,
         q1,
         q2,
+        learn_alpha=True,
         network_path=None,
         # modifying denoising schedule
         min_sampling_denoising_std=0.1,
@@ -25,6 +27,14 @@ class SACDiffusion(DiffusionModel):
         ft_denoising_steps=0,
         ft_denoising_steps_d=0,
         ft_denoising_steps_t=0,
+        cond_dim=0,
+        action_step=1,
+        # DACER SPECIFIC
+        logalpha=math.log(3),
+        lambda_=0.1,
+        entropy=0.0,
+        target_entropy=-0.9,
+        tau=0.005,
         **kwargs,
     ):
         super().__init__(
@@ -33,6 +43,7 @@ class SACDiffusion(DiffusionModel):
             **kwargs,
         )
         log.info("---------- INIT Diffusion MLP OK ----------")
+        # do not touch
         assert not self.use_ddim, "NOT YET CHECKED WITH DDIM SUPPORT"
         assert ft_denoising_steps == 0, "FT_DENOISING_STEPS has to be 0 in SACDiffusion"
         assert ft_denoising_steps_d == 0, "FT_DENOISING_STEPS_D has to be 0 in SACDiffusion"
@@ -49,6 +60,8 @@ class SACDiffusion(DiffusionModel):
             else min_sampling_denoising_std
         )
 
+        self.cond_dim = cond_dim
+        self.action_step = action_step
         self.actor = self.network
 
         # Update dummy input dimensions
@@ -70,11 +83,44 @@ class SACDiffusion(DiffusionModel):
         self.q2 = q2
         self.q2.trainable = True
 
+        dummy_obs = {'state': tf.zeros((1, self.cond_dim))}
+        dummy_action = tf.zeros((1, self.action_dim * self.action_step))
+        
+        _ = self.q1(dummy_obs, dummy_action)
+        _ = self.q2(dummy_obs, dummy_action)
+        assert self.q1.built, "q1 is not built."
+        assert self.q2.built, "q2 is not built."
+        
+        self.q1_target = tf.keras.models.clone_model(self.q1)
+        self.q2_target = tf.keras.models.clone_model(self.q2)
+        self.q1_target.trainable = True
+        self.q2_target.trainable = True
+
+        _ = self.q1_target(dummy_obs, dummy_action)
+        _ = self.q2_target(dummy_obs, dummy_action)
+        assert self.q1_target.built, "q1 is not built."
+        assert self.q2_target.built, "q2 is not built."
+
+        self.q1_target.set_weights(self.q1.get_weights())
+        self.q2_target.set_weights(self.q2.get_weights())
+
+        # DACER specific
+        self.logalpha = tf.Variable(logalpha, trainable=learn_alpha)
+        self.lambda_ = tf.constant(lambda_)
+        self.entropy = tf.constant(entropy, dtype=tf.float32)
+        self.target_entropy = tf.constant(target_entropy * self.action_dim, dtype=tf.float32)
+        self.tau = tf.constant(tau, dtype=tf.float32)
         # load critic
         if network_path is not None:
             # Load the checkpoint directly
             checkpoint = tf.train.load_checkpoint(network_path)
             log.info(f"NOT YET IMPLEMENT")
+    
+    def update_target(self):
+        for target_param, param in zip(self.q1_target.trainable_variables, self.q1.trainable_variables):
+            target_param.assign(param * self.tau + (1.0 - self.tau) * target_param)
+        for target_param, param in zip(self.q2_target.trainable_variables, self.q2.trainable_variables):
+            target_param.assign(param * self.tau + (1.0 - self.tau) * target_param)
 
     def get_min_sampling_denoising_std(self):
         return self.min_sampling_denoising_std
@@ -279,11 +325,16 @@ class SACDiffusion(DiffusionModel):
                     std = tf.clip_by_value(std, 1e-3, np.inf)
                 else:
                     std = tf.clip_by_value(std, min_sampling_denoising_std, np.inf)
+
             noise = tf.random.normal(tf.shape(x), dtype=x.dtype)
             noise = tf.clip_by_value(
                 noise, -self.randn_clip_value, self.randn_clip_value
             )
             x = mean + std * noise
+
+            # # DACER approach
+            # noise = tf.random.normal(tf.shape(x), dtype=x.dtype)
+            # x = x + noise * tf.math.exp(self.logalpha) * self.lambda_
 
             # Clamp action at final step
             if self.final_action_clip_value is not None and i == num_timesteps - 1:
@@ -317,6 +368,17 @@ class SACDiffusion(DiffusionModel):
                 tf.TensorShape(None), # Use TensorArray instead
             ],
         )
+
+        # DACER approach
+        noise = tf.random.normal(tf.shape(x), dtype=x.dtype)
+        x = x + noise * tf.math.exp(self.logalpha) * self.lambda_
+
+
+        # Clamp action at final step
+        if self.final_action_clip_value is not None:
+            x = tf.clip_by_value(
+                x, -self.final_action_clip_value, self.final_action_clip_value
+            )
 
         # Process the chain after the loop
         if return_chain:
