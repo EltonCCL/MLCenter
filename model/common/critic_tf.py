@@ -50,6 +50,56 @@ class CriticObs(tf.keras.Model):
         q1 = self.Q1(state)
         return q1
 
+
+class CriticQvalue(tf.keras.Model):
+    """State-only critic network."""
+
+    def __init__(
+        self,
+        cond_dim,
+        mlp_dims,
+        action_dim,
+        action_steps=1,
+        activation_type="Mish",
+        use_layernorm=False,
+        residual_style=False,
+        test_mode=False,
+        **kwargs,
+    ):
+        super(CriticQvalue, self).__init__()
+        mlp_dims = [cond_dim + action_dim * action_steps] + mlp_dims + [1]
+        if test_mode:
+            self.Q1 = tf.keras.layers.Dense(1)
+        else:
+            if residual_style:
+                model = ResidualMLP
+            else:
+                model = MLP
+            self.Q1 = model(
+                mlp_dims,
+                activation_type=activation_type,
+                out_activation_type="Identity",
+                use_layernorm=use_layernorm,
+            )
+
+    def call(self, cond: Union[dict, tf.Tensor], action):
+        """
+        cond: dict with key state/rgb; more recent obs at the end
+            state: (B, To, Do)
+        action: (B, Ta, Da)
+        """
+        if isinstance(cond, dict):
+            B = tf.shape(cond["state"])[0]
+            state = tf.reshape(cond["state"], [B, -1])
+        else:
+            state = cond
+
+        flatten_action = tf.reshape(action, [B, -1])
+        x = tf.concat([state, flatten_action], axis=-1)
+        
+        q1 = self.Q1(x)
+        return q1
+
 class CriticObsAct(tf.keras.Model):
     """State-action double critic network."""
 
