@@ -17,6 +17,7 @@ class SACDiffusion(DiffusionModel):
         actor,
         q1,
         q2,
+        ft_denoising_steps,
         learn_alpha=True,
         network_path=None,
         # modifying denoising schedule
@@ -24,7 +25,6 @@ class SACDiffusion(DiffusionModel):
         # min_logprob_denoising_std=0.1,
         # eta=None,
         # learn_eta=False,
-        ft_denoising_steps=0,
         ft_denoising_steps_d=0,
         ft_denoising_steps_t=0,
         cond_dim=0,
@@ -42,12 +42,12 @@ class SACDiffusion(DiffusionModel):
             network_path=network_path,
             **kwargs,
         )
-        log.info("---------- INIT Diffusion MLP OK ----------")
         # do not touch
+        assert ft_denoising_steps <= self.denoising_steps
+        assert ft_denoising_steps <= self.ddim_steps if self.use_ddim else True
         assert not self.use_ddim, "NOT YET CHECKED WITH DDIM SUPPORT"
-        assert ft_denoising_steps == 0, "FT_DENOISING_STEPS has to be 0 in SACDiffusion"
-        assert ft_denoising_steps_d == 0, "FT_DENOISING_STEPS_D has to be 0 in SACDiffusion"
-        assert ft_denoising_steps_t == 0, "FT_DENOISING_STEPS_T has to be 0 in SACDiffusion"
+        log.info("---------- INIT Diffusion MLP OK ----------")
+        
         self.ft_denoising_steps = ft_denoising_steps
         self.ft_denoising_steps_d = ft_denoising_steps_d  # annealing step size
         self.ft_denoising_steps_t = ft_denoising_steps_t  # annealing interval
@@ -75,8 +75,25 @@ class SACDiffusion(DiffusionModel):
         }
         _ = self.actor(dummy_input, time=dummy_time, cond=dummy_cond)
 
+        # Clone self.actor to self.actor_tf
+        self.actor_ft = tf.keras.models.clone_model(self.actor)
+
+        # Build the cloned model by calling it with dummy inputs
+        _ = self.actor_ft(dummy_input, time=dummy_time, cond=dummy_cond)
         assert self.actor.built, "Main model is not built."
-        self.actor.trainable = True
+        assert self.actor_ft.built, "ft model is not built."
+        self.actor_ft.set_weights(self.actor.get_weights())
+        self.actor_ft.trainable = True
+        self.actor.trainable = False
+        logging.info("Cloned and initialized the fine-tuned actor model")
+
+        # Turn off gradients for original model
+        self.actor.trainable = False
+        logging.info("Turned off gradients of the pretrained network")
+        finetuned_params = sum(
+            [tf.size(var).numpy() for var in self.actor_ft.trainable_variables]
+        )
+        logging.info(f"Number of finetuned parameters: {finetuned_params}")
 
         self.q1 = q1
         self.q1.trainable = True
@@ -137,6 +154,7 @@ class SACDiffusion(DiffusionModel):
         t,
         cond,
         index=None,
+        use_base_policy=False,
         deterministic=False,
     ):
         """
@@ -152,7 +170,7 @@ class SACDiffusion(DiffusionModel):
             ft_indices = tf.where(t < self.ft_denoising_steps)[:, 0]
 
         # Use base policy to query expert model, e.g. for imitation loss
-        actor = self.actor
+        actor = self.actor if use_base_policy else self.actor_ft
 
         # Overwrite noise for fine-tuning steps
         if tf.size(ft_indices) > 0:
@@ -372,7 +390,6 @@ class SACDiffusion(DiffusionModel):
         # DACER approach
         noise = tf.random.normal(tf.shape(x), dtype=x.dtype)
         x = x + noise * tf.math.exp(self.logalpha) * self.lambda_
-
 
         # Clamp action at final step
         if self.final_action_clip_value is not None:
