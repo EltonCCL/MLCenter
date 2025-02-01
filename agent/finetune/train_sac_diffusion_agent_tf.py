@@ -71,6 +71,8 @@ class TrainSACDiffusionAgent(TrainAgent):
         self.delay_update = cfg.train.delay_update
         # Scaling reward
         self.scale_reward_factor = cfg.train.scale_reward_factor
+        self.batch_size = cfg.train.batch_size
+
         # Cosine scheduler with linear warmup
         self.actor_lr_scheduler = CosineAnnealingWarmupRestarts(
             first_cycle_steps=cfg.train.actor_lr_scheduler.first_cycle_steps,
@@ -134,6 +136,7 @@ class TrainSACDiffusionAgent(TrainAgent):
     def run(self):
         # make a FIFO replay buffer for obs, action, and reward
         obs_buffer = deque(maxlen=self.buffer_size)
+        next_obs_buffer = deque(maxlen=self.buffer_size)
         action_buffer = deque(maxlen=self.buffer_size)
         reward_buffer = deque(maxlen=self.buffer_size)
         terminated_buffer = deque(maxlen=self.buffer_size)
@@ -204,15 +207,31 @@ class TrainSACDiffusionAgent(TrainAgent):
 
                     # add to buffer
                     if not eval_mode:
-                        obs_buffer.append(prev_obs_tensor.numpy())
-                        action_buffer.append(action_venv)
-                        reward_buffer.append(reward_venv * self.scale_reward_factor)
-                        terminated_buffer.append(terminated_venv)
-                        cnt_train_step += self.n_envs * self.act_steps
-
+                        for i in range(self.n_envs):
+                            obs_buffer.append(prev_obs_venv["state"][i])
+                            # print(obs_buffer[0])
+                            if truncated_venv[i]:
+                                next_obs_buffer.append(info_venv[i]["final_obs"]["state"])
+                            else:
+                                next_obs_buffer.append(obs_venv["state"][i])
+                            # print(next_obs_buffer[0])
+                            action_buffer.append(action_venv[i])
+                            # print(action_buffer[0])
+                        reward_buffer.extend(reward_venv * self.scale_reward_factor)
+                        # print(reward_buffer[0])
+                        terminated_buffer.extend(terminated_venv)
+                        # print(terminated_buffer[0])
+                        # obs_buffer.append(prev_obs_tensor.numpy())
+                        # action_buffer.append(action_venv)
+                        # reward_buffer.append(reward_venv * self.scale_reward_factor)
+                        # terminated_buffer.append(terminated_venv)
+                        # cnt_train_step += self.n_envs * self.act_steps
                     prev_obs_tensor = tf.convert_to_tensor(obs_venv["state"], dtype=tf.float32)
                         # Summarize episode rewards
+                    
+                    cnt_train_step += self.n_envs * self.act_steps if not eval_mode else 0
 
+                    
             episodes_start_end = []
             for env_ind in range(self.n_envs):
                 env_steps = np.where(firsts_trajs[:, env_ind] == 1)[0]
@@ -254,30 +273,45 @@ class TrainSACDiffusionAgent(TrainAgent):
             
             # Update models if not in evaluation mode
             if not eval_mode:
-                for update in range(self.update_per_iteration):
-                    buffer_size = len(obs_buffer)
-                    if buffer_size < math.ceil(self.cfg.train.batch_size/self.n_envs) or buffer_size < 2: # Need at least 2 elements for next_obs
-                        assert False, "Not enough data in buffer for a batch"
-                    
-                    # obs_trajs shape (step, n_env, cond(?), obs_dim)
-                    inds = np.random.randint(0, buffer_size - 1, size=math.ceil(self.cfg.train.batch_size / self.n_envs)) # Sample up to buffer_size - 2 to ensure next_obs is valid
-                    obs_batch = np.array([obs_buffer[i] for i in inds])
-                    action_batch = np.array([action_buffer[i] for i in inds])
-                    reward_batch = np.array([reward_buffer[i] for i in inds])
-                    terminated_batch = np.array([terminated_buffer[i] for i in inds])
-                    next_obs_batch = np.array([obs_buffer[i + 1] for i in inds])
-            
-                    obs_b = tf.convert_to_tensor(obs_batch, dtype=tf.float32)
-                    action_b = tf.convert_to_tensor(action_batch, dtype=tf.float32)
-                    reward_b = tf.convert_to_tensor(reward_batch, dtype=tf.float32)
-                    next_obs_b = tf.convert_to_tensor(next_obs_batch, dtype=tf.float32)
-                    done_b = tf.convert_to_tensor(terminated_batch, dtype=tf.float32)
+                obs_array = np.array(obs_buffer)
+                next_obs_array = np.array(next_obs_buffer)
+                action_array = np.array(action_buffer)
+                reward_array = np.array(reward_buffer)
+                terminated_array = np.array(terminated_buffer)
 
-                    obs_b = einops.rearrange(obs_b, "s e ... -> (s e) ...")
-                    action_b = einops.rearrange(action_b, "s e ... -> (s e) ...")
-                    reward_b = einops.rearrange(reward_b, "s e -> (s e)")
-                    next_obs_b = einops.rearrange(next_obs_b, "s e ... -> (s e) ...")
-                    done_b = einops.rearrange(done_b, "s e -> (s e)")
+                for update in range(self.update_per_iteration):
+                    # buffer_size = len(obs_buffer)
+                    # if buffer_size < math.ceil(self.cfg.train.batch_size/self.n_envs) or buffer_size < 2: # Need at least 2 elements for next_obs
+                    #     assert False, "Not enough data in buffer for a batch"
+                    
+                    # # obs_trajs shape (step, n_env, cond(?), obs_dim)
+                    # inds = np.random.randint(0, buffer_size - 1, size=math.ceil(self.cfg.train.batch_size / self.n_envs)) # Sample up to buffer_size - 2 to ensure next_obs is valid
+                    # obs_batch = np.array([obs_buffer[i] for i in inds])
+                    # action_batch = np.array([action_buffer[i] for i in inds])
+                    # reward_batch = np.array([reward_buffer[i] for i in inds])
+                    # terminated_batch = np.array([terminated_buffer[i] for i in inds])
+                    # next_obs_batch = np.array([obs_buffer[i + 1] for i in inds])
+            
+                    # obs_b = tf.convert_to_tensor(obs_batch, dtype=tf.float32)
+                    # action_b = tf.convert_to_tensor(action_batch, dtype=tf.float32)
+                    # reward_b = tf.convert_to_tensor(reward_batch, dtype=tf.float32)
+                    # next_obs_b = tf.convert_to_tensor(next_obs_batch, dtype=tf.float32)
+                    # done_b = tf.convert_to_tensor(terminated_batch, dtype=tf.float32)
+
+                    # obs_b = einops.rearrange(obs_b, "s e ... -> (s e) ...")
+                    # action_b = einops.rearrange(action_b, "s e ... -> (s e) ...")
+                    # reward_b = einops.rearrange(reward_b, "s e -> (s e)")
+                    # next_obs_b = einops.rearrange(next_obs_b, "s e ... -> (s e) ...")
+                    # done_b = einops.rearrange(done_b, "s e -> (s e)")
+
+                    inds = np.random.choice(len(obs_array), self.batch_size)
+
+                    obs_b = tf.convert_to_tensor(obs_array[inds], dtype=tf.float32)
+                    next_obs_b = tf.convert_to_tensor(next_obs_array[inds], dtype=tf.float32)
+                    action_b = tf.convert_to_tensor(action_array[inds], dtype=tf.float32)
+                    reward_b = tf.convert_to_tensor(reward_array[inds], dtype=tf.float32)
+                    done_b = tf.convert_to_tensor(terminated_array[inds], dtype=tf.float32)
+
 
                     obs_b = {"state": obs_b}
                     next_obs_b = {"state": next_obs_b}
@@ -289,7 +323,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                     
                     min_nest_q_target = tf.minimum(next_q1_target, next_q2_target)
 
-                    next_q_value = reward_b + (1-done_b) * self.gamma * min_nest_q_target
+                    next_q_value = reward_b + (1 - done_b) * self.gamma * min_nest_q_target
 
                     ## -- core --##
                     with tf.GradientTape() as tape:
@@ -318,19 +352,21 @@ class TrainSACDiffusionAgent(TrainAgent):
                         actions = tf.stack(actions, axis=0)
                         actions = einops.rearrange(actions, 's b a -> b s a')
                         entropy = estimate_entropy(actions)
+                        log.info(f"Updated Emtropy: {entropy}")
                         self.model.entropy = tf.constant(entropy, dtype=tf.float32)
                     
                     # optimization for policy
-                    with tf.GradientTape() as tape:
-                        pi = self.model(obs_b)
-                        q1_pi = self.model.q1(obs_b, pi.trajectories)
-                        q2_pi = self.model.q2(obs_b, pi.trajectories)
-                        min_q_pi = tf.minimum(q1_pi, q2_pi)
-                        actor_loss = tf.reduce_mean(-min_q_pi)
-   
-                    actor_var = self.model.actor_ft.trainable_variables
-                    actor_gradients = tape.gradient(actor_loss, actor_var)
-                    self.actor_optimizer.apply_gradients(zip(actor_gradients, actor_var))
+                    if self.itr % self.delay_update == 0:
+                        with tf.GradientTape() as tape:
+                            pi = self.model(obs_b)
+                            q1_pi = self.model.q1(obs_b, pi.trajectories)
+                            q2_pi = self.model.q2(obs_b, pi.trajectories)
+                            min_q_pi = tf.minimum(q1_pi, q2_pi)
+                            actor_loss = tf.reduce_mean(-min_q_pi)
+    
+                        actor_var = self.model.actor_ft.trainable_variables
+                        actor_gradients = tape.gradient(actor_loss, actor_var)
+                        self.actor_optimizer.apply_gradients(zip(actor_gradients, actor_var))
 
                     # update alpha
                     if self.itr % self.delay_alpha_update == 0:
