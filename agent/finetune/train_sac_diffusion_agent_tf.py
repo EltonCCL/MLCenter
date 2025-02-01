@@ -69,6 +69,8 @@ class TrainSACDiffusionAgent(TrainAgent):
         self.delay_alpha_update = cfg.train.delay_alpha_update
         self.num_sample = cfg.train.num_sample
         self.delay_update = cfg.train.delay_update
+        # Scaling reward
+        self.scale_reward_factor = cfg.train.scale_reward_factor
         # Cosine scheduler with linear warmup
         self.actor_lr_scheduler = CosineAnnealingWarmupRestarts(
             first_cycle_steps=cfg.train.actor_lr_scheduler.first_cycle_steps,
@@ -136,6 +138,8 @@ class TrainSACDiffusionAgent(TrainAgent):
         reward_buffer = deque(maxlen=self.buffer_size)
         terminated_buffer = deque(maxlen=self.buffer_size)
 
+        log_alpha_loss = tf.constant(0.0, dtype=tf.float32)
+
         # Start training loop
         timer = Timer()
         run_results = []
@@ -193,10 +197,6 @@ class TrainSACDiffusionAgent(TrainAgent):
                         info_venv,
                     ) = self.venv.step(action_venv)
 
-                    # obs_venv shape (n_env, 1, obs_dim)
-                    # reward_venv shape (n_env, )
-                    # terminated_venv shape (n_env, )
-                    # truncated_venv shape (n_env, )
 
                     done_venv = terminated_venv | truncated_venv
                     reward_trajs[step] = reward_venv
@@ -282,26 +282,16 @@ class TrainSACDiffusionAgent(TrainAgent):
                     obs_b = {"state": obs_b}
                     next_obs_b = {"state": next_obs_b}
 
-                    # print("obs_b shape: ", obs_b['state'].shape)
-                    # print("action_b shape: ", action_b.shape)
-                    # print("reward_b shape: ", reward_b.shape)
-                    # print("next_obs_b shape: ", next_obs_b['state'].shape)
-                    # print("done_b shape: ", done_b.shape)
-
                     # compute target q
                     next_action = self.model(next_obs_b, training=False)
                     next_q1_target = self.model.q1_target(next_obs_b, next_action.trajectories, training=False)
                     next_q2_target = self.model.q2_target(next_obs_b, next_action.trajectories, training=False)
                     
                     min_nest_q_target = tf.minimum(next_q1_target, next_q2_target)
-                    # print("reward_b shape: ", reward_b.shape)
-                    # print("done_b shape: ", done_b.shape)
-                    # print("1-done_b shape: ", (1-done_b).shape)
-                    # print("min_nest_q_target shape: ", min_nest_q_target.shape)
-                    next_q_value = reward_b + (1-done_b) * self.gamma * min_nest_q_target
-                    # print("next_q_value shape: ", next_q_value.shape)
-                    # print("next_q_value: ", next_q_value)
 
+                    next_q_value = reward_b + (1-done_b) * self.gamma * min_nest_q_target
+
+                    ## -- core --##
                     with tf.GradientTape() as tape:
                         q1_a_value = self.model.q1(obs_b, action_b, training=True)
                         q2_a_value = self.model.q2(obs_b, action_b, training=True)
@@ -361,6 +351,7 @@ class TrainSACDiffusionAgent(TrainAgent):
             q1_lr = self.q1_lr_scheduler(self.itr)
             q2_lr = self.q2_lr_scheduler(self.itr)
             alpha_lr = self.alpha_lr_scheduler(self.itr)
+
             self.q1_optimizer.learning_rate.assign(q1_lr)
             self.q2_optimizer.learning_rate.assign(q2_lr)
             self.alpha_optimizer.learning_rate.assign(alpha_lr)
@@ -404,7 +395,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                     #     f"{self.itr}: step {cnt_train_step:8d} | loss {loss:8.4f} | pg loss {pg_loss:8.4f} | value loss {v_loss:8.4f} | bc loss {bc_loss:8.4f} | reward {avg_episode_reward:8.4f} | eta {eta:8.4f} | t:{time:8.4f}"
                     # )
                     log.info(
-                        f"{self.itr}: step {cnt_train_step:8d} | q1_loss: {q1_loss:8.4f} | q2_loss: {q2_loss:8.4f} | q_loss: {q_loss:8.4f} | actor loss: {actor_loss:8.4f} | entropy: {entropy:8.4f} | log alpha loss: {log_alpha_loss:8.4f} | alpha: {self.model.logalpha.numpy():8.4f}"
+                        f"{self.itr}: step {cnt_train_step:8d} | q1_loss: {q1_loss:8.4f} | q2_loss: {q2_loss:8.4f} | q_loss: {q_loss:8.4f} | actor loss: {actor_loss:8.4f} | entropy: {self.model.entropy:8.4f} | log alpha loss: {log_alpha_loss:8.4f} | alpha: {self.model.logalpha.numpy():8.4f}"
                     )
                     if self.use_wandb:
                         wandb.log(
@@ -414,7 +405,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                                 "q2_loss": q2_loss,
                                 "q_loss": q_loss,
                                 "actor loss": actor_loss,
-                                "entropy": entropy,
+                                "entropy": self.model.entropy,
                                 "log alpha loss": log_alpha_loss,
                                 "alpha": self.model.logalpha,
                                 "avg episode reward - train": avg_episode_reward,
