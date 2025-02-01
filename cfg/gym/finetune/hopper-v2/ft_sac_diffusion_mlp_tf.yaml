@@ -16,7 +16,7 @@ env_name: hopper-medium-v2
 obs_dim: 11
 action_dim: 3
 denoising_steps: 20
-ft_denoising_steps: 10
+ft_denoising_steps: ${denoising_steps}
 cond_steps: 1
 horizon_steps: 4
 act_steps: 4
@@ -39,7 +39,7 @@ env:
 
 wandb:
   entity: ${oc.env:DPPO_WANDB_ENTITY}
-  project: gym-${env_name}-finetune
+  project: gym-${env_name}-finetune-sac-diffusion-mlp-tf
   run: ${now:%H-%M-%S}_${name}
 
 train:

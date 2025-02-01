@@ -206,7 +206,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                     if not eval_mode:
                         obs_buffer.append(prev_obs_tensor.numpy())
                         action_buffer.append(action_venv)
-                        reward_buffer.append(reward_venv)
+                        reward_buffer.append(reward_venv * self.scale_reward_factor)
                         terminated_buffer.append(terminated_venv)
                         cnt_train_step += self.n_envs * self.act_steps
 

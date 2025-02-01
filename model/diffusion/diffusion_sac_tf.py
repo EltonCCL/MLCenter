@@ -161,7 +161,7 @@ class SACDiffusion(DiffusionModel):
         Optimized version using boolean masking instead of tf.tensor_scatter_nd_update.
         """
         # Dynamically determine the concatenation dimension
-        noise = self.actor(x, t, cond=cond)
+        noise = self.actor_ft(x, t, cond=cond)
         if self.use_ddim:
             ft_indices = tf.where(index >= (self.ddim_steps - self.ft_denoising_steps))[
                 :, 0
