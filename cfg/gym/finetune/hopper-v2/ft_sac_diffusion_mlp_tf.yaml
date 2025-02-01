@@ -81,11 +81,11 @@ train:
   # target_kl: 1
 
   # SAC specific
-  buffer_size: 100000
+  buffer_size: 1000000
   batch_size: 1000
   update_per_iteration: 1
-  delay_alpha_update: 10
-  delay_update: 2
+  delay_alpha_update: 5
+  delay_update: 1
   num_sample: 200
   scale_reward_factor: 0.2
   
@@ -93,6 +93,7 @@ model:
   _target_: model.diffusion.diffusion_sac_tf.SACDiffusion
   randn_clip_value: 3
   min_sampling_denoising_std: 0.1
+  final_action_clip_value: 1
   #
   network_path: ${base_policy_path}
   actor:
@@ -129,5 +130,7 @@ model:
   denoising_steps: ${denoising_steps}
   device: ${device}
   tau: 0.005
+  entropy: 0.0
   target_entropy: -0.9
   lambda_: 0.15
+  learn_alpha: True
