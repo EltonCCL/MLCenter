@@ -345,7 +345,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                     self.q2_optimizer.apply_gradients(zip(q2_gradients, self.model.q2.trainable_variables))
 
                     # update entropy
-                    if self.itr % self.delay_alpha_update == 0:
+                    if self.itr % self.delay_alpha_update == 0 and self.model.learn_alpha:
                         actions = []
                         for _ in range(self.num_sample):
                             actions.append(self.model(obs_b, training=False).trajectories[:,0,:])
@@ -369,7 +369,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                         self.actor_optimizer.apply_gradients(zip(actor_gradients, actor_var))
 
                     # update alpha
-                    if self.itr % self.delay_alpha_update == 0:
+                    if self.itr % self.delay_alpha_update == 0 and self.model.learn_alpha:
                         with tf.GradientTape() as tape:
                           log_alpha_loss = -tf.reduce_mean(self.model.logalpha * (-self.model.entropy + self.model.target_entropy))
                         alpha_var = self.model.logalpha
