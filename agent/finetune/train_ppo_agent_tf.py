@@ -96,6 +96,28 @@ class TrainPPOAgent(TrainAgent):
         self.use_bc_loss: bool = cfg.train.get("use_bc_loss", False)
         self.bc_loss_coeff: float = cfg.train.get("bc_loss_coeff", 0)
 
+    def save_model(self):
+        """
+        Saves the current model checkpoint to disk.
+        """
+        checkpoint = tf.train.Checkpoint(
+            itr=tf.Variable(self.itr),
+            ft_model=tf.train.Checkpoint( # Renamed for clarity
+                actor=self.model.actor,
+                actor_ft=self.model.actor_ft,
+                critic=self.model.critic,
+                min_sampling_denoising_std=self.model.min_sampling_denoising_std, # If you want to save these
+                min_logprob_denoising_std=self.model.min_logprob_denoising_std, # If you want to save these
+            )
+        )
+        manager = tf.train.CheckpointManager(
+            checkpoint,
+            self.checkpoint_dir,
+            max_to_keep=100
+        )
+        save_path = manager.save(checkpoint_number=self.itr)
+        log.info(f"Saved model to {save_path}")
+
     def reset_actor_optimizer(self):
         assert False, "Not used anywhere currently"
         """Reset the actor optimizer to its initial state."""
