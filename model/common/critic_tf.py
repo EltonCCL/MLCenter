@@ -59,7 +59,7 @@ class CriticQvalue(tf.keras.Model):
         cond_dim,
         mlp_dims,
         action_dim,
-        action_steps=1,
+        action_steps,
         activation_type="Mish",
         use_layernorm=False,
         residual_style=False,
