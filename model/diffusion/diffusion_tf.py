@@ -95,12 +95,12 @@ class DiffusionModel(tf.keras.Model):
                     cond=dummy_cond,
                     )
                 original_parameter = self.network.get_weights()
-                latest = tf.train.latest_checkpoint(network_path)
+                # latest = tf.train.latest_checkpoint(network_path)
 
 
                 has_ema = False
                 checkpoint_vars = {}
-                for name, shape in tf.train.list_variables(latest):
+                for name, shape in tf.train.list_variables(network_path):
                     checkpoint_vars[name] = shape
                     if "ema" in name:
                         has_ema = True
@@ -112,25 +112,28 @@ class DiffusionModel(tf.keras.Model):
                             network=self.network
                         )
                     )
-                    status = checkpoint.restore(latest)
+                    status = checkpoint.restore(network_path)
                     status.expect_partial()
                     loaded_parameter = self.network.get_weights()
                     assert len(original_parameter) == len(loaded_parameter), "Model parameters mismatch"
                     assert not np.array_equal(original_parameter, loaded_parameter), "Model parameters are the same"
-                    logging.info("Loaded SL-trained policy from %s", network_path)
+                    print("Loaded SL-trained policy from ", network_path)
+                    log.info("Loaded SL-trained policy from %s", network_path)
                 else:
                     checkpoint = tf.train.Checkpoint(
                         model=tf.train.Checkpoint(
                             network=self.network
                         )
                     )
-                    status = checkpoint.restore(latest)
+                    status = checkpoint.restore(network_path)
                     status.expect_partial()
                     loaded_parameter = self.network.get_weights()
                     assert len(original_parameter) == len(loaded_parameter), "Model parameters mismatch"
                     assert not np.array_equal(original_parameter, loaded_parameter), "Model parameters are the same"
-                    logging.info("Loaded RL-trained policy from %s", network_path)
+                    print("Loaded RL-trained policy from ", network_path)
+                    log.info("Loaded RL-trained policy from %s", network_path)
             else:
+                print("No checkpoint found at ", network_path)
                 log.warning(f"No checkpoint found at {network_path}")
 
             # DDPM parameters
