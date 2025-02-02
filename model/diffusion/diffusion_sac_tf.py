@@ -27,7 +27,7 @@ class SACDiffusion(DiffusionModel):
         # learn_eta=False,
         ft_denoising_steps_d=0,
         ft_denoising_steps_t=0,
-        cond_dim=0,
+        cond_dim=1,
         action_step=1,
         # DACER SPECIFIC
         logalpha=math.log(3),
@@ -47,7 +47,6 @@ class SACDiffusion(DiffusionModel):
         assert ft_denoising_steps <= self.ddim_steps if self.use_ddim else True
         assert not self.use_ddim, "NOT YET CHECKED WITH DDIM SUPPORT"
         log.info("---------- INIT Diffusion MLP OK ----------")
-        
         self.ft_denoising_steps = ft_denoising_steps
         self.ft_denoising_steps_d = ft_denoising_steps_d  # annealing step size
         self.ft_denoising_steps_t = ft_denoising_steps_t  # annealing interval
@@ -85,15 +84,16 @@ class SACDiffusion(DiffusionModel):
         self.actor_ft.set_weights(self.actor.get_weights())
         self.actor_ft.trainable = True
         self.actor.trainable = False
-        logging.info("Cloned and initialized the fine-tuned actor model")
+        log.info("Cloned and initialized the fine-tuned actor model")
 
         # Turn off gradients for original model
         self.actor.trainable = False
-        logging.info("Turned off gradients of the pretrained network")
+        log.info("Turned off gradients of the pretrained network")
         finetuned_params = sum(
             [tf.size(var).numpy() for var in self.actor_ft.trainable_variables]
         )
-        logging.info(f"Number of finetuned parameters: {finetuned_params}")
+
+        # log.info(f"Number of finetuned parameters: {finetuned_params}")
 
         self.q1 = q1
         self.q1.trainable = True
@@ -127,11 +127,103 @@ class SACDiffusion(DiffusionModel):
         self.entropy = tf.constant(entropy, dtype=tf.float32)
         self.target_entropy = tf.constant(target_entropy * self.action_dim, dtype=tf.float32)
         self.tau = tf.constant(tau, dtype=tf.float32)
-        # load critic
+        self.learn_alpha = learn_alpha
+
+
         if network_path is not None:
-            # Load the checkpoint directly
-            checkpoint = tf.train.load_checkpoint(network_path)
-            log.info(f"NOT YET IMPLEMENT")
+            checkpoint_vars = {}
+            has_ft = False
+            for name, shape in tf.train.list_variables(network_path):
+                    checkpoint_vars[name] = shape
+                    if "ft_model" in name:
+                        has_ft = True
+            
+            log.info(f"Found fine-tuned model in checkpoint: {has_ft}")
+            if has_ft:
+                checkpoint = tf.train.Checkpoint(
+                    itr=tf.Variable(0),
+                    ft_model=tf.train.Checkpoint(
+                        network=self.actor,
+                        actor_ft=self.actor_ft,
+                        min_sampling_denoising_std=self.min_sampling_denoising_std,
+                        q1=self.q1,
+                        q2=self.q2,
+                        q1_target=self.q1_target,
+                        q2_target=self.q2_target,
+                        logalpha=self.logalpha,
+                    )
+                )
+
+                initial_actor_params = self.actor.get_weights()
+                initial_actor_ft_params = self.actor_ft.get_weights()
+                initial_q1_params = self.q1.get_weights()
+                initial_q2_params = self.q2.get_weights()
+                initial_q1_target_params = self.q1_target.get_weights()
+                initial_q2_target_params = self.q2_target.get_weights()
+                initial_logalpha = self.logalpha.numpy()
+                initial_min_sampling_denoising_std = self.min_sampling_denoising_std.numpy()
+
+                status = checkpoint.restore(network_path)
+
+                log.info(f"Restored fine-tuned model from {network_path}")
+                loaded_actor_params = self.actor.get_weights()
+                loaded_actor_ft_params = self.actor_ft.get_weights()
+                loaded_q1_params = self.q1.get_weights()
+                loaded_q2_params = self.q2.get_weights()
+                loaded_q1_target_params = self.q1_target.get_weights()
+                loaded_q2_target_params = self.q2_target.get_weights()
+                loaded_logalpha = self.logalpha.numpy()
+                loaded_min_sampling_denoising_std = self.min_sampling_denoising_std.numpy()
+
+                assert len(initial_actor_params) == len(loaded_actor_params), "Actor parameters mismatch"
+                for original_parameter, loaded_parameter in zip(initial_actor_params, loaded_actor_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Actor parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Actor parameters are the same after loading (This is expected for non-ft actor if not saved in ckpt)" # Expect same for non-ft actor
+
+                # Actor FT
+                assert len(initial_actor_ft_params) == len(loaded_actor_ft_params), "Actor FT parameters mismatch"
+                for original_parameter, loaded_parameter in zip(initial_actor_ft_params, loaded_actor_ft_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Actor FT parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Actor FT parameters are the same"
+
+                # Q1
+                assert len(initial_q1_params) == len(loaded_q1_params), "Q1 parameters mismatch"
+                for original_parameter, loaded_parameter in zip(initial_q1_params, loaded_q1_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Q1 parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Q1 parameters are the same"
+
+                # Q2
+                assert len(initial_q2_params) == len(loaded_q2_params), "Q2 parameters mismatch"
+                for original_parameter, loaded_parameter in zip(initial_q2_params, loaded_q2_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Q2 parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Q2 parameters are the same"
+
+                # Q1 Target
+                assert len(initial_q1_target_params) == len(loaded_q1_target_params), "Q1 Target parameters mismatch"
+                for original_parameter, loaded_parameter in zip(initial_q1_target_params, loaded_q1_target_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Q1 Target parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Q1 Target parameters are the same"
+
+                # Q2 Target
+                assert len(initial_q2_target_params) == len(loaded_q2_target_params), "Q2 Target parameters mismatch"
+                for original_parameter, loaded_parameter in zip(initial_q2_target_params, loaded_q2_target_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Q2 Target parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Q2 Target parameters are the same"
+
+                # logalpha
+                assert initial_logalpha.shape == loaded_logalpha.shape, "logalpha shape mismatch"
+
+                if np.array_equal(initial_logalpha, loaded_logalpha):
+                    log.warning(f"Previous Alpha: {initial_logalpha}")
+                    log.warning(f"Loaded Alpha: {loaded_logalpha}")
+                    log.warning("logalpha is the same after loading. Please check if this is expected. (i.e. you want the logalpha to be a constant)")
+                # assert not np.array_equal(initial_logalpha, loaded_logalpha), "logalpha is the same"
+
+                # min_sampling_denoising_std
+                assert initial_min_sampling_denoising_std.shape == loaded_min_sampling_denoising_std.shape, "min_sampling_denoising_std shape mismatch"
+                if np.array_equal(initial_min_sampling_denoising_std, loaded_min_sampling_denoising_std):
+                    log.warning("min_sampling_denoising_std is the same after loading. Please check if this is expected. (i.e. you want the min_sampling_denoising_std to be a constant)")
+        
     
     def update_target(self):
         for target_param, param in zip(self.q1_target.trainable_variables, self.q1.trainable_variables):
