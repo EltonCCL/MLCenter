@@ -64,6 +64,7 @@ class VPGDiffusion(DiffusionModel):
         # eta in DDIM
         eta=None,
         learn_eta=False,
+        cond_steps=1,
         **kwargs,
     ):
         super().__init__(
@@ -81,6 +82,8 @@ class VPGDiffusion(DiffusionModel):
         self.ft_denoising_steps_d = ft_denoising_steps_d  # annealing step size
         self.ft_denoising_steps_t = ft_denoising_steps_t  # annealing interval
         self.ft_denoising_steps_cnt = 0
+        
+        self.cond_steps = cond_steps
 
         # Minimum std used in denoising process when sampling action - helps exploration
         assert isinstance(min_sampling_denoising_std, float)
@@ -141,19 +144,48 @@ class VPGDiffusion(DiffusionModel):
 
         # Value function
         self.critic = critic
+        dummy_critic_input = tf.zeros([1, self.obs_dim * self.cond_steps])
+        _ = self.critic(dummy_critic_input)
         self.critic.trainable = True
 
         if network_path is not None:
-            # Load the checkpoint directly
-            checkpoint = tf.train.load_checkpoint(network_path)
-            
-            # Check if 'ema' exists in the checkpoint
-            checkpoint_vars = checkpoint.get_variable_to_shape_map()
-            has_ema = any('ema' in var_name for var_name in checkpoint_vars)
+            checkpoint_vars = {}
+            has_ft = False
+            for name, shape in tf.train.list_variables(network_path):
+                checkpoint_vars[name] = shape
+                if "ft_model" in name:
+                    has_ft = True
+            log.info(f"Found fine-tuned model in checkpoint: {has_ft}")
+            if has_ft:
+                checkpoint = tf.train.Checkpoint(
+                    itr=tf.Variable(0),
+                    ft_model=tf.train.Checkpoint(
+                        actor=self.actor,
+                        actor_ft=self.actor_ft,
+                        critic=self.critic,
+                        min_sampling_denoising_std=self.min_sampling_denoising_std,
+                        min_logprob_denoising_std=self.min_logprob_denoising_std,
+                    )
+                )
 
-            if not has_ema:  # load trained RL model
-                self.load_weights(network_path)
-                logging.info(f"Loaded model from {network_path}")
+                initial_actor_params = self.actor.get_weights()
+                initial_actor_ft_params = self.actor_ft.get_weights()
+                initial_critic_params = self.critic.get_weights()
+
+                status = checkpoint.restore(network_path)
+
+                loaded_actor_params = self.actor.get_weights()
+                loaded_actor_ft_params = self.actor_ft.get_weights()
+                loaded_critic_params = self.critic.get_weights()
+
+
+                for original_parameter, loaded_parameter in zip(initial_actor_params, loaded_actor_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Actor parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Actor parameters are the same after loading (This is expected for non-ft actor if not saved in ckpt)" # Expect same for non-ft actor
+
+                for original_parameter, loaded_parameter in zip(initial_actor_ft_params, loaded_actor_ft_params):
+                    assert original_parameter.shape == loaded_parameter.shape, "Actor FT parameter shape mismatch"
+                    assert not np.array_equal(original_parameter, loaded_parameter), "Actor FT parameters are the same"
 
         log.info("---------- INIT VPGDiffusion OK ----------")
 
