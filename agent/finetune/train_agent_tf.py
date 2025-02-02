@@ -130,11 +130,6 @@ class TrainAgent:
             else None
         )
 
-        # Checkpointing
-        self.checkpoint = tf.train.Checkpoint(
-            itr=tf.Variable(self.itr), model=self.model
-        )
-        # Restore if necessary
 
     def run(self):
         """
@@ -146,22 +141,30 @@ class TrainAgent:
         """
         Saves the current model checkpoint to disk.
         """
-        savepath = os.path.join(self.checkpoint_dir, f"state_{self.itr}.ckpt")
-        self.checkpoint.itr.assign(self.itr)
-        self.checkpoint.write(savepath)
-        log.info(f"Saved model to {savepath}")
+        checkpoint = tf.train.Checkpoint(
+            itr=tf.Variable(self.itr),
+            ft_model=self.model,
+        )
+        manager = tf.train.CheckpointManager(
+            checkpoint,
+            self.checkpoint_dir,
+            max_to_keep=100
+        )
+        save_path = manager.save(checkpoint_number=self.itr)
+        log.info(f"Saved model to {save_path}")
 
     def load(self, itr):
-        """
-        Loads a model checkpoint from disk.
+        assert False, "Not implemented"
+        # """
+        # Loads a model checkpoint from disk.
 
-        Args:
-            itr: The iteration number of the checkpoint to load.
-        """
-        loadpath = os.path.join(self.checkpoint_dir, f"state_{itr}.ckpt")
-        self.checkpoint.restore(loadpath).assert_consumed()
-        self.itr = int(self.checkpoint.itr.numpy())
-        log.info(f"Loaded model from {loadpath}")
+        # Args:
+        #     itr: The iteration number of the checkpoint to load.
+        # """
+        # loadpath = os.path.join(self.checkpoint_dir, f"state_{itr}.ckpt")
+        # self.checkpoint.restore(loadpath).assert_consumed()
+        # self.itr = int(self.checkpoint.itr.numpy())
+        # log.info(f"Loaded model from {loadpath}")
 
     def reset_env_all(self, verbose=False, options_venv=None, **kwargs):
         """
