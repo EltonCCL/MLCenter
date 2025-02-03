@@ -214,20 +214,11 @@ class TrainSACDiffusionAgent(TrainAgent):
                                 next_obs_buffer.append(info_venv[i]["final_obs"]["state"])
                             else:
                                 next_obs_buffer.append(obs_venv["state"][i])
-                            # print(next_obs_buffer[0])
                             action_buffer.append(action_venv[i])
-                            # print(action_buffer[0])
                         reward_buffer.extend(reward_venv * self.scale_reward_factor)
-                        # print(reward_buffer[0])
                         terminated_buffer.extend(terminated_venv)
-                        # print(terminated_buffer[0])
-                        # obs_buffer.append(prev_obs_tensor.numpy())
-                        # action_buffer.append(action_venv)
-                        # reward_buffer.append(reward_venv * self.scale_reward_factor)
-                        # terminated_buffer.append(terminated_venv)
-                        # cnt_train_step += self.n_envs * self.act_steps
+
                     prev_obs_tensor = tf.convert_to_tensor(obs_venv["state"], dtype=tf.float32)
-                        # Summarize episode rewards
                     
                     cnt_train_step += self.n_envs * self.act_steps if not eval_mode else 0
 
@@ -280,30 +271,7 @@ class TrainSACDiffusionAgent(TrainAgent):
                 terminated_array = np.array(terminated_buffer)
 
                 for update in range(self.update_per_iteration):
-                    # buffer_size = len(obs_buffer)
-                    # if buffer_size < math.ceil(self.cfg.train.batch_size/self.n_envs) or buffer_size < 2: # Need at least 2 elements for next_obs
-                    #     assert False, "Not enough data in buffer for a batch"
                     
-                    # # obs_trajs shape (step, n_env, cond(?), obs_dim)
-                    # inds = np.random.randint(0, buffer_size - 1, size=math.ceil(self.cfg.train.batch_size / self.n_envs)) # Sample up to buffer_size - 2 to ensure next_obs is valid
-                    # obs_batch = np.array([obs_buffer[i] for i in inds])
-                    # action_batch = np.array([action_buffer[i] for i in inds])
-                    # reward_batch = np.array([reward_buffer[i] for i in inds])
-                    # terminated_batch = np.array([terminated_buffer[i] for i in inds])
-                    # next_obs_batch = np.array([obs_buffer[i + 1] for i in inds])
-            
-                    # obs_b = tf.convert_to_tensor(obs_batch, dtype=tf.float32)
-                    # action_b = tf.convert_to_tensor(action_batch, dtype=tf.float32)
-                    # reward_b = tf.convert_to_tensor(reward_batch, dtype=tf.float32)
-                    # next_obs_b = tf.convert_to_tensor(next_obs_batch, dtype=tf.float32)
-                    # done_b = tf.convert_to_tensor(terminated_batch, dtype=tf.float32)
-
-                    # obs_b = einops.rearrange(obs_b, "s e ... -> (s e) ...")
-                    # action_b = einops.rearrange(action_b, "s e ... -> (s e) ...")
-                    # reward_b = einops.rearrange(reward_b, "s e -> (s e)")
-                    # next_obs_b = einops.rearrange(next_obs_b, "s e ... -> (s e) ...")
-                    # done_b = einops.rearrange(done_b, "s e -> (s e)")
-
                     inds = np.random.choice(len(obs_array), self.batch_size)
 
                     obs_b = tf.convert_to_tensor(obs_array[inds], dtype=tf.float32)
@@ -427,9 +395,6 @@ class TrainSACDiffusionAgent(TrainAgent):
                     run_results[-1]["eval_episode_reward"] = avg_episode_reward
                     run_results[-1]["eval_best_reward"] = avg_best_reward
                 else:
-                    # log.info(
-                    #     f"{self.itr}: step {cnt_train_step:8d} | loss {loss:8.4f} | pg loss {pg_loss:8.4f} | value loss {v_loss:8.4f} | bc loss {bc_loss:8.4f} | reward {avg_episode_reward:8.4f} | eta {eta:8.4f} | t:{time:8.4f}"
-                    # )
                     log.info(
                         f"{self.itr}: step {cnt_train_step:8d} | q1_loss: {q1_loss:8.4f} | q2_loss: {q2_loss:8.4f} | q_loss: {q_loss:8.4f} | actor loss: {actor_loss:8.4f} | entropy: {self.model.entropy:8.4f} | log alpha loss: {log_alpha_loss:8.4f} | alpha: {self.model.logalpha.numpy():8.4f}"
                     )
