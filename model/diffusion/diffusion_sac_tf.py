@@ -20,11 +20,7 @@ class SACDiffusion(DiffusionModel):
         ft_denoising_steps,
         learn_alpha=True,
         network_path=None,
-        # modifying denoising schedule
         min_sampling_denoising_std=0.1,
-        # min_logprob_denoising_std=0.1,
-        # eta=None,
-        # learn_eta=False,
         ft_denoising_steps_d=0,
         ft_denoising_steps_t=0,
         cond_dim=1,
@@ -42,7 +38,6 @@ class SACDiffusion(DiffusionModel):
             network_path=network_path,
             **kwargs,
         )
-        # do not touch
         assert ft_denoising_steps <= self.denoising_steps
         assert ft_denoising_steps <= self.ddim_steps if self.use_ddim else True
         assert not self.use_ddim, "NOT YET CHECKED WITH DDIM SUPPORT"
@@ -233,10 +228,6 @@ class SACDiffusion(DiffusionModel):
 
     def get_min_sampling_denoising_std(self):
         return self.min_sampling_denoising_std
-        # if isinstance(self.min_sampling_denoising_std, float):
-        #     return self.min_sampling_denoising_std
-        # else:
-        #     return self.min_sampling_denoising_std  # Removed .numpy()
 
     # Override
     @tf.function(reduce_retracing=True)
