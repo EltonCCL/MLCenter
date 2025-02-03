@@ -1,0 +1,87 @@
+defaults:
+  - _self_
+hydra:
+  run:  
+    dir: ${logdir}
+_target_: agent.eval.eval_diffusion_agent_tf.EvalDiffusionAgent
+
+name: ${env_name}_eval_diffusion_mlp_ta${horizon_steps}_td${denoising_steps}
+logdir: ${oc.env:DPPO_LOG_DIR}/gym-eval/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
+base_policy_path: log/gym-finetune/hopper-medium-v2_sac_diffusion_mlp_ta4_td20_tf/2025-02-02_09-03-51_42/checkpoint/ckpt-100
+normalization_path: ${oc.env:DPPO_DATA_DIR}/gym/${env_name}/normalization.npz
+
+seed: 42
+device: gpu:0
+env_name: hopper-medium-v2
+obs_dim: 11
+action_dim: 3
+denoising_steps: 20
+ft_denoising_steps: ${denoising_steps}
+cond_steps: 1
+horizon_steps: 4
+act_steps: 4
+
+n_steps: 250  # each episode can take maximum (max_episode_steps / act_steps, =250 right now) steps but may finish earlier in gym. We only count episodes finished within n_steps for evaluation.
+render_num: 0
+
+env:
+  n_envs: 40
+  name: ${env_name}
+  max_episode_steps: 1000
+  reset_at_iteration: False
+  save_video: False
+  best_reward_threshold_for_success: 3  # success rate not relevant for gym tasks
+  wrappers:
+    mujoco_locomotion_lowdim:
+      normalization_path: ${normalization_path}
+    multi_step:
+      n_obs_steps: ${cond_steps}
+      n_action_steps: ${act_steps}
+      max_episode_steps: ${env.max_episode_steps}
+      reset_within_step: True
+
+model:
+  _target_: model.diffusion.diffusion_sac_tf.SACDiffusion
+  randn_clip_value: 3
+  min_sampling_denoising_std: 0.1
+  final_action_clip_value: 1
+  #
+  network_path: ${base_policy_path}
+  actor:
+    _target_: model.diffusion.mlp_diffusion_tf.DiffusionMLP
+    time_dim: 16
+    mlp_dims: [512, 512, 512]
+    activation_type: ReLU
+    residual_style: True
+    cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}
+    horizon_steps: ${horizon_steps}
+    action_dim: ${action_dim}
+  q1:
+    _target_: model.common.critic_tf.CriticQvalue
+    cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}
+    mlp_dims: [256, 256, 256]
+    action_dim: ${action_dim}
+    action_steps: ${act_steps}
+    activation_type: Mish
+    residual_style: True
+  q2:
+    _target_: model.common.critic_tf.CriticQvalue
+    cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}
+    mlp_dims: [256, 256, 256]
+    action_dim: ${action_dim}
+    action_steps: ${act_steps}
+    activation_type: Mish
+    residual_style: True
+  ft_denoising_steps: ${ft_denoising_steps}
+  horizon_steps: ${horizon_steps}
+  obs_dim: ${obs_dim}
+  action_dim: ${action_dim}
+  cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}
+  action_step: ${act_steps}
+  denoising_steps: ${denoising_steps}
+  device: ${device}
+  tau: 0.005
+  entropy: 0.0
+  target_entropy: -0.9
+  lambda_: 0.15
+  learn_alpha: False
